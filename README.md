@@ -1,6 +1,8 @@
 # Official Utinni plugins
 This is the offical [ModTheGalaxy.com](https://modthegalaxy.com/) plugin repository for [Utinni](https://github.com/ptklatt/Utinni).
 
+> **Documentation:** open [`docs/index.html`](./docs/index.html) for a full walk-through of **The Jawa Toolbox** (the canonical reference plugin) plus the [idiomatic plugin patterns](./docs/patterns.html) distilled from it. The same content is available as plain markdown under [`docs/ai/`](./docs/ai/). The Utinni framework documentation lives in the sibling repo at [`../Utinni/docs/`](../Utinni/docs/index.html).
+
 **The Jawa Toolbox - Features**
 * Gizmo for easy snapshot node manipulation
 * Ability to instantly load into a scene at startup

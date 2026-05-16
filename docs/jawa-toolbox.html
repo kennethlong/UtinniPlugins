@@ -1,0 +1,597 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>The Jawa Toolbox — UtinniPlugins</title>
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<link rel="stylesheet" href="style.css" />
+</head>
+<body>
+<header class="site">
+  <h1><span class="accent">UtinniPlugins</span> — The canonical reference plugin</h1>
+  <div class="sub">A complete worked example: snapshot editor, object browser, free-cam, hotkeys, undo.</div>
+</header>
+<nav class="top">
+  <a href="index.html">Overview</a>
+  <a href="jawa-toolbox.html" class="active">The Jawa Toolbox</a>
+  <a href="patterns.html">Patterns</a>
+  <a href="sytners.html">Sytner's plugin</a>
+  <a href="../../Utinni/docs/index.html">↗ Utinni framework docs</a>
+</nav>
+<main>
+
+<h1>The Jawa Toolbox</h1>
+
+<div class="callout info">
+The canonical Utinni editor plugin. Read this top-to-bottom and you'll
+recognise the conventions every other Utinni plugin uses.
+</div>
+
+<h2>What it does</h2>
+
+<table>
+  <thead>
+    <tr><th>Feature area</th><th>Capabilities</th></tr>
+  </thead>
+  <tbody>
+    <tr><td><strong>World-snapshot editing</strong></td><td>Add / remove / move / rotate / duplicate snapshot nodes. Full undo/redo. Gizmo-driven with snap support. Save / Save-As to <code>.ws</code>.</td></tr>
+    <tr><td><strong>Object browser</strong></td><td>Floating form. TreeView of all object categories pulled from the running client's TRE files. Drag-from-list, drop-into-world creates a snapshot node.</td></tr>
+    <tr><td><strong>Scene controls</strong></td><td>Load / unload / reload terrain. Pick avatar object. Set time-of-day. Cycle weather. Toggle modal chat.</td></tr>
+    <tr><td><strong>Free-cam</strong></td><td>Toggle free flight. Speed slider + half/double hotkeys. Teleport buttons. Drag-player option.</td></tr>
+    <tr><td><strong>Player controls</strong></td><td>Position / speed inputs. Teleport. Teleport-to-camera. Player-model visibility toggle.</td></tr>
+    <tr><td><strong>Graphics debug</strong></td><td>Wireframe mode. Render skeleton bones. Reload textures.</td></tr>
+    <tr><td><strong>CUI helpers</strong></td><td>Reload UI without restarting.</td></tr>
+    <tr><td><strong>Slash commands</strong></td><td><code>/cam</code>, <code>/player</code>, <code>/speed</code>, <code>/teleport</code>, <code>/reloadSnapshot</code>, <code>/reloadTerrain</code>, <code>/reloadUI</code>, <code>/tod</code>, <code>/weather</code>.</td></tr>
+  </tbody>
+</table>
+
+<h2>Solution layout</h2>
+
+<pre><code>TheJawaToolbox.sln                                  ← VS solution, x86/Win32, Debug/Release/RelWithDbgInfo
+├── TheJawaToolbox/                                  ← C++ side
+│   ├── TheJawaToolbox.vcxproj
+│   ├── plugin.cpp                                   ← UtinniPlugin subclass + UTINNI_PLUGIN factory
+│   └── swg/ui/
+│       ├── tjt_command_parser.h
+│       └── tjt_command_parser.cpp                   ← /cam, /player, /speed, /teleport, /reload*, /tod, /weather
+└── TheJawaToolboxDotNet/                            ← C# side (IEditorPlugin)
+    ├── TheJawaToolboxDotNet.csproj
+    ├── Plugin.cs                                    ← IEditorPlugin entry
+    │
+    ├── UI/SubPanels/                                ← right-rail SubPanels
+    │   ├── ScenePanel.cs       (+ .Designer / .resx)
+    │   ├── SnapshotPanel.cs
+    │   ├── PlayerPanel.cs
+    │   ├── FreeCamPanel.cs
+    │   ├── GraphicsPanel.cs
+    │   └── MiscPanel.cs
+    │
+    ├── UI/Forms/                                    ← IEditorForms
+    │   └── FormObjectBrowser.cs
+    │
+    ├── Impl/                                        ← business logic, one per feature area
+    │   ├── WorldSnapshotImpl.cs                     ← snapshot CRUD + gizmo integration (~560 lines)
+    │   ├── GroundSceneImpl.cs                        ← terrain / weather / time-of-day
+    │   ├── FreeCamImpl.cs                            ← free-cam state
+    │   ├── PlayerObjectImpl.cs                       ← player position / speed / teleport
+    │   ├── GraphicsImpl.cs                           ← wireframe / skeleton / texture reload
+    │   ├── CuiImpl.cs                                ← UI reload
+    │   └── MiscImpl.cs                               ← misc
+    │
+    ├── Commands/                                    ← plugin-specific IUndoCommand subclasses (when needed beyond Utinni's built-ins)
+    │   └── ...
+    │
+    └── settings.ini (built artifact)
+</code></pre>
+
+<p>Both projects build into:</p>
+
+<pre><code>&lt;install&gt;/Plugins/TheJawaToolbox/
+├── TheJawaToolbox.dll
+├── TheJawaToolboxDotNet.dll
+├── settings.ini      (created on first run from defaults)
+└── input.ini         (HotkeyManager persistence)
+</code></pre>
+
+<p>
+<code>TheJawaToolboxDotNet</code> references <code>TheJawaToolbox</code> as a project dependency so
+the C++ side builds first.
+</p>
+
+<h2>C++ side</h2>
+
+<h3><code>plugin.cpp</code></h3>
+
+<pre><code>class TheJawaToolboxPlugin : public utinni::UtinniPlugin
+{
+    Information info = { "The Jawa Toolbox",
+                         "Snapshot/object/scene editor for SWG",
+                         "Timbab" };
+
+public:
+    TheJawaToolboxPlugin()
+    {
+        utinni::CuiChatWindow::addCreateCommandParserCallback(
+            &amp;tjt::TheJawaToolboxCommandParser::create);
+    }
+
+    const Information&amp; getInformation() override { return info; }
+};
+
+UTINNI_PLUGIN { return new TheJawaToolboxPlugin(); }
+</code></pre>
+
+<p>
+That's the entire native side outside of the command parser — about 30
+lines. The pattern is:
+</p>
+
+<blockquote>
+The C++ DLL exists only to register a native command parser. All real work
+happens in C#.
+</blockquote>
+
+<p>
+This is the right shape for almost any new editor plugin: a thin C++ shim
+to bridge anything that has to happen on the SWG side of the boundary, and
+all the editor surface in managed code.
+</p>
+
+<h3><code>tjt_command_parser.cpp</code></h3>
+
+<p>
+Subclasses <code>utinni::CommandParser</code>, registers the 9 commands listed in the
+feature table above. Each command directly calls a UtinniCore API:
+</p>
+
+<pre><code>bool TheJawaToolboxCommandParser::performParsing(
+    const int64_t&amp; userId,
+    const std::vector&lt;swg::WString&gt;&amp; args,
+    const wchar_t* originalCommand,
+    const wchar_t* result,
+    const CommandParser* node) override
+{
+    if (node-&gt;getName() == "cam") {
+        utinni::GroundScene::get()-&gt;toggleFreeCamera();
+        return true;
+    }
+    if (node-&gt;getName() == "tod") {
+        float t = std::stof(swg::wstringToString(args[0]));
+        utinni::Terrain::get()-&gt;setTimeOfDay(t);
+        return true;
+    }
+    // ... etc.
+    return false;
+}
+</code></pre>
+
+<p>
+Why command-parser hooks in C++ instead of C#? The parser is constructed from
+within <code>CuiChatWindow</code>'s constructor, on the game thread, long before the
+CLR is fully serviceable. Registering a native parser is the lowest-friction
+way to plug in. The result is callable from both directions:
+</p>
+
+<ul>
+  <li>User types <code>/cam</code> in chat → goes through native parser → toggles free-cam.</li>
+  <li>C# button click queues the same <code>GroundScene.Get().ToggleFreeCamera()</code> —
+    identical effect.</li>
+</ul>
+
+<h2>.NET side</h2>
+
+<h3><code>Plugin.cs</code> — <code>IEditorPlugin</code></h3>
+
+<pre><code>public class TheJawaToolboxPlugin : IEditorPlugin
+{
+    public PluginInformation Information { get; }
+    public EventHandler&lt;AddUndoCommandEventArgs&gt; AddUndoCommand { get; set; }
+
+    public UtINI Settings { get; }     // settings.ini next to the DLL
+
+    private readonly HotkeyManager hotkeys;
+
+    // Feature implementations
+    private readonly GroundSceneImpl    sceneImpl;
+    private readonly WorldSnapshotImpl  snapshotImpl;
+    private readonly FreeCamImpl        freeCamImpl;
+    private readonly PlayerObjectImpl   playerImpl;
+    private readonly GraphicsImpl       graphicsImpl;
+    private readonly CuiImpl            cuiImpl;
+    private readonly MiscImpl           miscImpl;
+
+    public TheJawaToolboxPlugin()
+    {
+        Information = new PluginInformation("The Jawa Toolbox", "...", "Timbab");
+        Settings    = new UtINI("settings.ini");
+        hotkeys     = new HotkeyManager(onGameFocusOnly: false);
+
+        sceneImpl    = new GroundSceneImpl   (Settings, hotkeys);
+        snapshotImpl = new WorldSnapshotImpl (Settings, hotkeys, this);
+        freeCamImpl  = new FreeCamImpl       (Settings, hotkeys);
+        playerImpl   = new PlayerObjectImpl  (Settings, hotkeys);
+        graphicsImpl = new GraphicsImpl      (Settings, hotkeys);
+        cuiImpl      = new CuiImpl           (Settings, hotkeys);
+        miscImpl     = new MiscImpl          (Settings, hotkeys);
+
+        hotkeys.CreateSettings();
+        Settings.Load();
+    }
+
+    public UtINI GetConfig() =&gt; Settings;
+    public HotkeyManager GetHotkeyManager() =&gt; hotkeys;
+
+    public List&lt;IEditorForm&gt; GetForms() =&gt; new List&lt;IEditorForm&gt;
+    {
+        new FormObjectBrowserDef(this, snapshotImpl)
+    };
+
+    public List&lt;SubPanelContainer&gt; GetStandalonePanels()
+    {
+        var c = new SubPanelContainer("Controls");
+        c.Add(new ScenePanel(sceneImpl));
+        c.Add(new SnapshotPanel(snapshotImpl, this));
+        c.Add(new PlayerPanel(playerImpl));
+        c.Add(new FreeCamPanel(freeCamImpl));
+        c.Add(new GraphicsPanel(graphicsImpl));
+        c.Add(new MiscPanel(miscImpl));
+        return new List&lt;SubPanelContainer&gt; { c };
+    }
+
+    public List&lt;SubPanel&gt; GetSubPanels() =&gt; null;
+}
+</code></pre>
+
+<p>
+The key pattern is <strong>separating UI from logic</strong>: every panel is a thin
+<code>SubPanel</code> whose constructor takes an interface (or just a reference) to the
+<code>*Impl</code> class that owns the actual work. The <code>*Impl</code> classes own all callback
+registration, hotkey definitions, undo command emission, and INI settings.
+The panels just wire button-clicks → <code>*Impl</code> methods.
+</p>
+
+<h3>Feature implementations (<code>Impl/</code>)</h3>
+
+<p>Each <code>*Impl</code> class follows the same recipe:</p>
+
+<ol>
+  <li><strong>Constructor</strong> takes a shared <code>UtINI</code> (for settings) and <code>HotkeyManager</code>.</li>
+  <li><strong><code>CreateSettings()</code></strong> seeds INI defaults for this feature's section.</li>
+  <li><strong>Subscribes to callbacks</strong> in the constructor:
+    <ul>
+      <li><code>GameCallbacks.AddInstallCallback</code>/<code>AddSetupSceneCall</code>/<code>AddCleanupSceneCall</code> for lifecycle.</li>
+      <li><code>GroundSceneCallbacks.AddUpdateLoopCall</code> for per-frame state polling.</li>
+      <li><code>ImGuiCallbacks</code> for gizmo events.</li>
+      <li><code>ObjectCallbacks</code> for target changes.</li>
+    </ul>
+  </li>
+  <li><strong>Registers hotkeys</strong> in the shared <code>HotkeyManager</code>.</li>
+  <li><strong>Exposes public methods</strong> the panel calls (<code>Load</code>, <code>Save</code>, <code>Toggle</code>,
+    <code>MoveByDelta</code>, etc.).</li>
+</ol>
+
+<p>Example (sketch of <code>GroundSceneImpl</code>):</p>
+
+<pre><code>public class GroundSceneImpl
+{
+    private readonly UtINI ini;
+    private readonly HotkeyManager hotkeys;
+
+    public GroundSceneImpl(UtINI ini, HotkeyManager hotkeys)
+    {
+        this.ini = ini;
+        this.hotkeys = hotkeys;
+
+        ini.AddSetting("Scene", "defaultTerrainFilename", "terrain/naboo.trn", VtString);
+        ini.AddSetting("Scene", "defaultAvatarFilename",
+                       "object/creature/player/shared_human_male.iff", VtString);
+        ini.AddSetting("Scene", "forceModalChat", "true", VtBool);
+
+        GameCallbacks.AddInstallCallback(() =&gt; PopulateTerrainList());
+        Task.Run(() =&gt; PollTimeOfDay());   // async UI updater
+    }
+
+    public void Load(string sceneName, string avatarFilename)
+        =&gt; GameCallbacks.AddMainLoopCall(() =&gt; Game.LoadScene(sceneName, avatarFilename));
+
+    public void Reload()  =&gt; GameCallbacks.AddMainLoopCall(() =&gt; GroundScene.Get().ReloadTerrain());
+    public void Unload()  =&gt; GameCallbacks.AddMainLoopCall(() =&gt; Game.CleanupScene());
+
+    public void SetTimeOfDay(float t)
+        =&gt; GroundSceneCallbacks.AddUpdateLoopCall(() =&gt; Terrain.Get().SetTimeOfDay(t));
+
+    public void SetWeather(int idx)
+        =&gt; GroundSceneCallbacks.AddUpdateLoopCall(() =&gt; Terrain.Get().SetWeather(idx));
+
+    private async Task PollTimeOfDay() { /* read from game thread, marshal to UI */ }
+    private void PopulateTerrainList() { /* read TreeFile filenames, raise event for panel */ }
+}
+</code></pre>
+
+<h2>Snapshot editing — the deep dive</h2>
+
+<p>
+<code>WorldSnapshotImpl</code> is the largest of the <code>*Impl</code> classes (~560 lines) and
+illustrates every Utinni concept at once.
+</p>
+
+<h3>Callbacks wired in constructor</h3>
+
+<pre><code>GameCallbacks.AddInstallCallback(OnInstall);
+GameCallbacks.AddSetupSceneCall(OnSetupScene);
+GameCallbacks.AddCleanupSceneCall(OnCleanupScene);
+
+ObjectCallbacks.AddOnTargetCallback(OnTargetChanged);
+
+ImGuiCallbacks.AddOnEnabledCallback(OnGizmoEnabled);
+ImGuiCallbacks.AddOnDisabledCallback(OnGizmoDisabled);
+ImGuiCallbacks.AddOnPositionChangedCallback(OnPositionChanged);
+ImGuiCallbacks.AddOnRotationChangedCallback(OnRotationChanged);
+</code></pre>
+
+<h3>Snapshot CRUD</h3>
+
+<table>
+  <thead>
+    <tr><th>Public method</th><th>Action</th><th>Undo?</th></tr>
+  </thead>
+  <tbody>
+    <tr><td><code>Load(name)</code></td><td>Defer → <code>WorldSnapshot.Load(name)</code></td><td>No</td></tr>
+    <tr><td><code>Unload()</code></td><td><code>WorldSnapshot.Unload()</code></td><td>No</td></tr>
+    <tr><td><code>Reload()</code></td><td><code>WorldSnapshot.Reload()</code></td><td>No</td></tr>
+    <tr><td><code>Save()</code> / <code>SaveAs(path)</code></td><td><code>WorldSnapshotReaderWriter.Get().SaveFile()</code></td><td>No</td></tr>
+    <tr><td><code>AddNode(filename)</code></td><td>Construct node, push <code>AddWorldSnapshotNodeCommand</code> (Utinni built-in)</td><td>Yes</td></tr>
+    <tr><td><code>RemoveNode()</code></td><td>Push <code>RemoveWorldSnapshotNodeCommand</code> with a stored copy</td><td>Yes</td></tr>
+    <tr><td><code>SetNodePosition(x,y,z)</code></td><td>Compute new transform, push <code>WorldSnapshotNodePositionChangedCommand</code> with before/after</td><td>Yes</td></tr>
+    <tr><td><code>RotateYaw/Pitch/Roll(deg)</code></td><td>Multiply transform by rotation, push <code>WorldSnapshotNodeRotationChangedCommand</code></td><td>Yes</td></tr>
+    <tr><td><code>Copy/Paste/Duplicate Node</code></td><td>Clipboard storage in-memory; paste creates a new node + add-undo command</td><td>Yes</td></tr>
+  </tbody>
+</table>
+
+<h3>Gizmo integration</h3>
+
+<p>Gizmo lifecycle is event-driven:</p>
+
+<div class="mermaid">
+sequenceDiagram
+  participant User
+  participant Panel as SnapshotPanel
+  participant Impl as WorldSnapshotImpl
+  participant ImGui as imgui_impl
+  participant Cb as ImGuiCallbacks
+
+  User->>Panel: targets a snapshot-node object
+  Note over Panel: SnapshotPanel detects via ObjectCallbacks.AddOnTargetCallback
+  Panel->>Impl: EnableGizmo(target)
+  Impl->>ImGui: GroundSceneCallbacks.AddPreDrawLoopCall(() => imgui_impl.Enable(target))
+  ImGui->>Cb: gizmo enabled
+  Cb->>Impl: OnGizmoEnabled() — captures beforeTransform = obj.GetTransform()
+  User->>ImGui: drags translate handle
+  ImGui->>Cb: position changed
+  Cb->>Impl: OnPositionChanged()
+  Impl->>Impl: AddUndoCommand?.Invoke(WorldSnapshotNodePositionChangedCommand(node, beforeT, obj.GetTransform()))
+  Impl->>Impl: beforeT = obj.GetTransform()  // re-arm for next edit
+  User->>Panel: clicks elsewhere (target gone)
+  Cb->>Impl: OnGizmoDisabled()
+</div>
+
+<p>
+The <code>beforeTransform</code> re-arming after each push means each gizmo drag is one
+clean undo step even if the user releases-and-grabs repeatedly.
+</p>
+
+<h3>Hotkeys registered</h3>
+
+<pre><code>hotkeys.Add(new Hotkey {
+    Name = "ToggleSnapshotNodeEditingMode",
+    Text = "Toggle snapshot node editing",
+    Key = Keys.Oemtilde, ModifierKeys = Keys.None,
+    OnDownCallback = ToggleNodeEditing,
+    Enabled = true, OnGameFocusOnly = true, OverrideGameInput = true
+});
+
+hotkeys.Add(new Hotkey {
+    Name = "SaveSnapshot",
+    Text = "Save snapshot",
+    Key = Keys.S, ModifierKeys = Keys.Control,
+    OnDownCallback = Save, OnGameFocusOnly = true
+});
+
+hotkeys.Add(new Hotkey {
+    Name = "CopySnapshotNode",     Key = Keys.C, ModifierKeys = Keys.Control, ...
+});
+hotkeys.Add(new Hotkey {
+    Name = "DeleteSnapshotNode",   Key = Keys.Delete, ModifierKeys = Keys.None, ...
+});
+hotkeys.Add(new Hotkey {
+    Name = "SetGizmoTranslateOperationMode",
+    Key = Keys.Q, ModifierKeys = Keys.Control,
+    OnDownCallback = () =&gt; imgui_impl.SetOperationModeToTranslate()
+});
+hotkeys.Add(new Hotkey {
+    Name = "SetGizmoRotationOperationMode",
+    Key = Keys.E, ModifierKeys = Keys.Control,
+    OnDownCallback = () =&gt; imgui_impl.SetOperationModeToRotate()
+});
+</code></pre>
+
+<p>The gizmo-mode hotkeys are toggled by <code>OnGizmoEnabled</code> / <code>OnGizmoDisabled</code>:</p>
+
+<pre><code>private void OnGizmoEnabled()
+{
+    hotkeys.Hotkeys["SetGizmoTranslateOperationMode"].Enabled = true;
+    hotkeys.Hotkeys["SetGizmoRotationOperationMode"].Enabled  = true;
+}
+</code></pre>
+
+<p>— a clean pattern for context-sensitive shortcuts.</p>
+
+<h3>Settings</h3>
+
+<pre><code>[Snapshot]
+defaultSnapshotName        = naboo
+defaultNodeObjectFilename  = object/tangible/furniture/cheap/shared_armoire_s01.iff
+autoEnableSnapshotEditing  = false
+autoAllowTargetEverything  = false
+</code></pre>
+
+<p>Read once on construct; can be updated by panel controls and re-saved.</p>
+
+<h2>Object browser</h2>
+
+<p>
+<code>FormObjectBrowser</code> is the only <code>IEditorForm</code> JT registers — it's a separate,
+modeless, dockable tool window. Highlights:
+</p>
+
+<h3>Repository scan</h3>
+
+<pre><code>private async Task LoadRepo()
+{
+    while (!Game.IsRunning) await Task.Delay(100);
+
+    var filenames = TreeFile.GetAllFilenames()         // all loaded TRE filenames
+                     .Where(f =&gt; f.StartsWith("object/"))
+                     .Where(f =&gt; !ExcludedCategories.Any(c =&gt; f.StartsWith($"object/{c}/")));
+
+    var tree = BuildTreeFromPaths(filenames);
+
+    this.BeginInvoke((MethodInvoker)(() =&gt;
+    {
+        treeViewCategories.BeginUpdate();
+        BindTree(tree);
+        treeViewCategories.EndUpdate();
+    }));
+}
+</code></pre>
+
+<p>
+<code>ExcludedCategories = { "cell", "factory", "group", "guild", "mission", "player", "token", "universe", "waypoint", ... }</code>
+— stuff that is technically <code>object/...</code> but not useful in a snapshot.
+</p>
+
+<h3>Drag-drop into the world</h3>
+
+<pre><code>private void lbFiles_MouseMove(object s, MouseEventArgs e)
+{
+    if (e.Button == MouseButtons.Left &amp;&amp; draggedFile != null)
+        DoDragDrop(draggedFile, DragDropEffects.Copy);
+}
+
+// In constructor:
+GameDragDropEventHandlers.OnDragEnter += HandleDragEnter;
+GameDragDropEventHandlers.OnDragOver  += HandleDragOver;
+GameDragDropEventHandlers.OnDragDrop  += HandleDragDrop;
+</code></pre>
+
+<pre><code>private Object dragPreview;
+
+private void HandleDragEnter(object s, DragEventArgs e)
+{
+    var filename = (string)e.Data.GetData(typeof(string));
+    GroundSceneCallbacks.AddPreDrawLoopCall(() =&gt;
+    {
+        dragPreview = CreateTemporaryObject(filename);
+        renderWorld.AddObjectNotifications(dragPreview);
+    });
+}
+
+private void HandleDragOver(object s, DragEventArgs e)
+{
+    var screenPoint = new Point(e.X, e.Y);
+    var clientPoint = panelGame.PointToClient(screenPoint);
+    GroundSceneCallbacks.AddPreDrawLoopCall(() =&gt;
+    {
+        var hit = cui_hud.CollideCursorWithWorld(clientPoint.X, clientPoint.Y);
+        if (hit.IsValid &amp;&amp; dragPreview != null)
+            dragPreview.SetTransform(new Transform(hit.Position, dragPreview.GetTransform().Rotation));
+    });
+}
+
+private void HandleDragDrop(object s, DragEventArgs e)
+{
+    GroundSceneCallbacks.AddPreDrawLoopCall(() =&gt;
+    {
+        var pos = dragPreview.GetTransform().Position;
+        snapshotImpl.AddNodeAt(pos, dragPreview.GetTemplateName());
+        DestroyTemporaryObject(dragPreview);
+        dragPreview = null;
+    });
+}
+</code></pre>
+
+<p>
+<code>CollideCursorWithWorld</code> lives in the <code>cui_hud</code> shim — it does the same
+mouse-ray-into-world test SWG uses for click-to-walk.
+</p>
+
+<h3>Settings</h3>
+
+<pre><code>[ObjectBrowser]
+width                   = 525
+height                  = 510
+keepOnTop               = true
+excludeJunkDirectories  = true
+</code></pre>
+
+<p><code>KeepOnTop</code> is exposed as a hotkey:</p>
+
+<pre><code>ToggleObjectBrowserKeepOnTop = Shift+Control+T
+</code></pre>
+
+<h2>Reusable patterns</h2>
+
+<p>
+See <a href="patterns.html">patterns</a> for the cross-cutting design ideas distilled from
+this codebase. Highlights:
+</p>
+
+<ul>
+  <li><strong>Composition over inheritance.</strong> No deep class hierarchies.</li>
+  <li><strong>One <code>*Impl</code> class per feature area.</strong> Panels are thin presentation.</li>
+  <li><strong>All game-API calls deferred via callbacks.</strong> Never call directly from UI
+    handlers.</li>
+  <li><strong>Hotkeys with scope flags + dynamic enable.</strong> Context-sensitive shortcuts
+    without messy if/else chains.</li>
+  <li><strong>Undo through events.</strong> Plugin never touches the stack — it raises
+    <code>AddUndoCommand</code>.</li>
+  <li><strong>Settings as composition root.</strong> One <code>UtINI</code> instance passed to every
+    feature; each feature defines its own section.</li>
+  <li><strong><code>Task</code> + <code>BeginInvoke</code> for async UI.</strong> Polling loops decoupled from
+    rendering.</li>
+</ul>
+
+<h2>Build output</h2>
+
+<pre><code>&lt;install&gt;/Plugins/TheJawaToolbox/
+├── TheJawaToolbox.dll
+├── TheJawaToolboxDotNet.dll
+├── settings.ini
+└── input.ini
+</code></pre>
+
+<p><code>ut.ini</code>:</p>
+
+<pre><code>[Plugins]
+plugin_0 = true,TheJawaToolbox
+</code></pre>
+
+<h2>See also</h2>
+
+<ul>
+  <li><a href="patterns.html">Plugin patterns</a></li>
+  <li><a href="../../Utinni/docs/plugin-framework.html">Utinni docs: Plugin framework</a></li>
+  <li><a href="../../Utinni/docs/callbacks.html">Utinni docs: Callbacks reference</a></li>
+  <li><a href="../../Utinni/docs/ui-framework.html">Utinni docs: UI framework</a></li>
+  <li><a href="../../Utinni/docs/tutorial.html">Utinni docs: Tutorial</a> — the
+    walk-through for building a small plugin uses the same patterns.</li>
+</ul>
+
+</main>
+<footer>
+  UtinniPlugins — official plugins for the Utinni modding framework.
+</footer>
+<script src="https://cdn.jsdelivr.net/npm/mermaid/dist/mermaid.min.js"></script>
+<script>mermaid.initialize({ startOnLoad: true, theme: "dark" });</script>
+</body>
+</html>

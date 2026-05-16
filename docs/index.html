@@ -1,0 +1,126 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>Overview — UtinniPlugins</title>
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<link rel="stylesheet" href="style.css" />
+</head>
+<body>
+<header class="site">
+  <h1><span class="accent">UtinniPlugins</span> — The Jawa Toolbox + plugin patterns</h1>
+  <div class="sub">The official plugin repository for the Utinni SWG modding framework.</div>
+</header>
+<nav class="top">
+  <a href="index.html" class="active">Overview</a>
+  <a href="jawa-toolbox.html">The Jawa Toolbox</a>
+  <a href="patterns.html">Patterns</a>
+  <a href="sytners.html">Sytner's plugin</a>
+  <a href="../../Utinni/docs/index.html">↗ Utinni framework docs</a>
+</nav>
+<main>
+
+<h1>UtinniPlugins — documentation</h1>
+
+<div class="callout info">
+<strong>For humans:</strong> open <a href="index.html"><code>docs/index.html</code></a> for the navigable HTML
+doc set.
+</div>
+
+<p>
+UtinniPlugins is the official plugin repository for <a href="../../Utinni/">Utinni</a>,
+the SWG client modding framework. It contains:
+</p>
+
+<ul>
+  <li><strong>The Jawa Toolbox</strong> — the canonical reference editor plugin. World-snapshot
+    node editor, object browser, free-cam, scene controls, time-of-day,
+    graphics debug. Read this first if you're learning the conventions.</li>
+  <li><strong>SytnersUtinniPlugin</strong> — currently a placeholder header
+    (<code>SytnersUtinniPlugin/sup.h</code>). Reserved for future work by James Webb
+    (Sytner).</li>
+</ul>
+
+<p>
+These are MIT-licensed forks of <a href="https://github.com/ptklatt/UtinniPlugins">ptklatt/UtinniPlugins</a>.
+</p>
+
+<h2>What to read</h2>
+
+<table>
+  <thead>
+    <tr><th>Topic</th><th>For…</th></tr>
+  </thead>
+  <tbody>
+    <tr><td><a href="jawa-toolbox.html">The Jawa Toolbox</a></td><td>Plugin authors learning idiomatic patterns by reading a complete plugin.</td></tr>
+    <tr><td><a href="patterns.html">Plugin patterns</a></td><td>The reusable design conventions extracted from the JT codebase.</td></tr>
+    <tr><td><a href="sytners.html"><code>SytnersUtinniPlugin</code></a></td><td>The placeholder, in case you're curious.</td></tr>
+  </tbody>
+</table>
+
+<h2>Mental model</h2>
+
+<div class="mermaid">
+flowchart LR
+  classDef core fill:#28344a,stroke:#57c1ff,color:#d6e1ee
+  classDef plugin fill:#1d2a23,stroke:#6dd58c,color:#d6e1ee
+  classDef plug2 fill:#2b231a,stroke:#ffb338,color:#d6e1ee
+
+  subgraph Utinni
+    direction TB
+    Core["UtinniCore.dll<br/>(native hooks + ImGui)"]:::core
+    Net["UtinniCoreDotNet.dll<br/>(managed bridge + editor)"]:::core
+  end
+
+  subgraph UtinniPlugins
+    direction TB
+    JT["The Jawa Toolbox"]:::plugin
+    JTcpp["TheJawaToolbox.dll<br/>(native: chat commands)"]:::plug2
+    JTnet["TheJawaToolboxDotNet.dll<br/>(managed: editor UI)"]:::plug2
+    Syt["SytnersUtinniPlugin<br/>(stub)"]:::plugin
+    JT --- JTcpp
+    JT --- JTnet
+  end
+
+  Core -. loaded by .-> JTcpp
+  Net  -. composed by .-> JTnet
+</div>
+
+<p>The Jawa Toolbox demonstrates Utinni's dual-language pattern:</p>
+
+<ul>
+  <li>A <strong>tiny C++ DLL</strong> that hooks the chat window's command-parser registration
+    so the plugin can add <code>/cam</code>, <code>/teleport</code>, <code>/reloadSnapshot</code>, etc. as
+    in-game slash commands.</li>
+  <li>A <strong>large .NET DLL</strong> that implements <code>IEditorPlugin</code> — owns several
+    <code>SubPanel</code>s, an <code>IEditorForm</code> (the Object Browser), the gizmo wiring, the
+    hotkeys, the undo command implementations, and per-feature <code>*Impl</code> classes.</li>
+</ul>
+
+<h2>Cross-references</h2>
+
+<ul>
+  <li>The Utinni framework documentation is at
+    <a href="../../Utinni/docs/index.html"><code>../../Utinni/docs/</code></a>. Read that first
+    for the framework architecture — these docs assume you know it.</li>
+  <li>The SDK / templates are in
+    <a href="../../Utinni/sdk/"><code>../../Utinni/sdk/</code></a> and documented at
+    <a href="../../Utinni/docs/sdk.html"><code>../../Utinni/docs/sdk.html</code></a>.</li>
+</ul>
+
+<h2>License</h2>
+
+<p>
+MIT — see <code>LICENSE</code> in repo root. Both repositories are forks; the intent is
+to maintain them in step with the upstream community where possible and
+otherwise advance the forks autonomously.
+</p>
+
+</main>
+<footer>
+  UtinniPlugins — official plugins for the Utinni modding framework.
+</footer>
+<script src="https://cdn.jsdelivr.net/npm/mermaid/dist/mermaid.min.js"></script>
+<script>mermaid.initialize({ startOnLoad: true, theme: "dark" });</script>
+</body>
+</html>

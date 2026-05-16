@@ -1,0 +1,373 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>Patterns — UtinniPlugins</title>
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<link rel="stylesheet" href="style.css" />
+</head>
+<body>
+<header class="site">
+  <h1><span class="accent">UtinniPlugins</span> — Idiomatic Utinni plugin design</h1>
+  <div class="sub">Cross-cutting conventions distilled from The Jawa Toolbox.</div>
+</header>
+<nav class="top">
+  <a href="index.html">Overview</a>
+  <a href="jawa-toolbox.html">The Jawa Toolbox</a>
+  <a href="patterns.html" class="active">Patterns</a>
+  <a href="sytners.html">Sytner's plugin</a>
+  <a href="../../Utinni/docs/index.html">↗ Utinni framework docs</a>
+</nav>
+<main>
+
+<h1>Plugin patterns</h1>
+
+<p>
+Conventions distilled from <a href="jawa-toolbox.html">The Jawa Toolbox</a>. Adopting
+them gives you a clean, idiomatic Utinni plugin.
+</p>
+
+<h2>1. Composition over inheritance</h2>
+
+<p>
+JT has zero deep class hierarchies. Every feature area is a top-level
+<code>&lt;Feature&gt;Impl</code> class plus one or more <code>SubPanel</code>s. The plugin class
+(<code>TheJawaToolboxPlugin</code>) is <strong>a composition root</strong> — it instantiates each
+<code>Impl</code>, hands them the shared settings/hotkey manager, and exposes them to
+<code>FormMain</code> via <code>GetSubPanels()</code> / <code>GetForms()</code> / <code>GetStandalonePanels()</code>.
+</p>
+
+<pre><code>public class MyPlugin : IEditorPlugin
+{
+    private readonly FeatureAImpl a;
+    private readonly FeatureBImpl b;
+    private readonly FeatureCImpl c;
+
+    public MyPlugin()
+    {
+        // shared state
+        var ini = new UtINI("settings.ini");
+        var hk  = new HotkeyManager(false);
+
+        // wire features
+        a = new FeatureAImpl(ini, hk);
+        b = new FeatureBImpl(ini, hk, a);   // B uses A
+        c = new FeatureCImpl(ini, hk);
+
+        hk.CreateSettings();
+        ini.Load();
+    }
+
+    // ...
+}
+</code></pre>
+
+<p>
+Why this matters: features are independently testable, easy to remove, and
+their dependencies are explicit (you see exactly which features touch
+which).
+</p>
+
+<h2>2. One <code>*Impl</code> per feature; panels are thin</h2>
+
+<p>
+A <code>SubPanel</code> should be presentation only — controls and event handlers that
+forward to <code>Impl</code> methods. All callback registration, hotkey setup, undo
+emission, and settings I/O happens in <code>Impl</code>.
+</p>
+
+<pre><code>// SnapshotPanel.cs (thin)
+public class SnapshotPanel : SubPanel
+{
+    private readonly WorldSnapshotImpl impl;
+    public SnapshotPanel(WorldSnapshotImpl impl) : base("Snapshot", true)
+    {
+        this.impl = impl;
+        // ... build controls
+        btnSave.Click  += (s,e) =&gt; impl.Save();
+        btnAdd.Click   += (s,e) =&gt; impl.AddNode(txtFile.Text);
+        gizmoTranslate.Click += (s,e) =&gt; impl.SetOperationModeToTranslate();
+    }
+}
+</code></pre>
+
+<p>
+This means <strong>swapping the UI</strong> (e.g. adding a second SubPanel that exposes
+the same features differently) doesn't touch the business logic at all.
+</p>
+
+<h2>3. Marshal everything</h2>
+
+<p>
+The single most common bug in new plugins is calling a game API on the UI
+thread, or touching WinForms from a callback. The rule is:
+</p>
+
+<table>
+  <thead>
+    <tr><th>You're on the…</th><th>You want to call a…</th><th>Do this</th></tr>
+  </thead>
+  <tbody>
+    <tr><td>UI thread (button, hotkey)</td><td>game API</td><td><code>GameCallbacks.AddMainLoopCall(() =&gt; Game.Foo())</code> or <code>GroundSceneCallbacks.AddUpdateLoopCall(...)</code></td></tr>
+    <tr><td>game thread (callback)</td><td>WinForms control</td><td><code>myControl.BeginInvoke((MethodInvoker)(() =&gt; myControl.Text = ...))</code></td></tr>
+    <tr><td>Background <code>Task</code></td><td>game API</td><td>enqueue a callback, await it via <code>TaskCompletionSource</code></td></tr>
+    <tr><td>Background <code>Task</code></td><td>WinForms control</td><td><code>Invoke</code> to UI</td></tr>
+  </tbody>
+</table>
+
+<p>
+JT does this consistently — every <code>Impl</code> method that touches the game wraps
+the call in a callback enqueue. Adopt the same style and a whole category of
+bugs disappears.
+</p>
+
+<h2>4. Hotkeys with scope flags + dynamic enable</h2>
+
+<p>
+Define hotkeys once in the <code>Impl</code> constructor with <code>Name = "MyPlugin.X"</code>
+prefixes. Use the scope flags:
+</p>
+
+<ul>
+  <li><code>OnGameFocusOnly</code> — most editor shortcuts should set this true (otherwise
+    they fire while the user is typing in a textbox in the side panel).</li>
+  <li><code>OverrideGameInput</code> — set true for hotkeys that should not also feed
+    through to SWG's input map (e.g. saving with <code>Ctrl+S</code> should not send <code>S</code>
+    to the chat window). It's not frame-perfect — for hard guarantees, call
+    <code>Client.SuspendInput()</code> / <code>ResumeInput()</code> directly in your handler.</li>
+</ul>
+
+<p>For context-sensitive shortcuts, toggle <code>Enabled</code> from a state callback:</p>
+
+<pre><code>private void OnGizmoEnabled()  =&gt;
+    hotkeys.Hotkeys["MyPlugin.GizmoTranslate"].Enabled = true;
+private void OnGizmoDisabled() =&gt;
+    hotkeys.Hotkeys["MyPlugin.GizmoTranslate"].Enabled = false;
+</code></pre>
+
+<h2>5. Undo via events, never via the stack</h2>
+
+<p>
+Never touch <code>UndoRedoManager</code> directly from a plugin. Always raise
+<code>IEditorPlugin.AddUndoCommand</code>:
+</p>
+
+<pre><code>owner.AddUndoCommand?.Invoke(owner,
+    new AddUndoCommandEventArgs(new MyCommand(before, after)));
+</code></pre>
+
+<p>
+For continuous edits (gizmo drag, slider drag) capture <code>before</code> on the
+edit-start callback (<code>OnGizmoEnabled</code>, <code>Slider.MouseDown</code>), capture <code>after</code>
+on the edit-end callback (<code>OnGizmoDisabled</code>, <code>Slider.MouseUp</code>), and push
+<strong>once</strong> with the pair.
+</p>
+
+<p>
+For multi-object batched edits, write one <code>IUndoCommand</code> that holds a list
+of (object, before, after) tuples — see the <code>Commands/WorldSnapshotCommands</code>
+built-ins as the contract.
+</p>
+
+<h2>6. Settings as composition root</h2>
+
+<p>
+One <code>UtINI</code> per plugin, passed to every feature. Each feature owns its own
+INI section name and seeds its defaults in <code>CreateSettings()</code>:
+</p>
+
+<pre><code>public class FeatureAImpl
+{
+    public FeatureAImpl(UtINI ini, HotkeyManager hk)
+    {
+        ini.AddSetting("FeatureA", "defaultThing", "naboo",  VtString);
+        ini.AddSetting("FeatureA", "autoStart",    "false",  VtBool);
+        // ...
+    }
+}
+</code></pre>
+
+<p>
+<code>AddSetting</code> is idempotent — re-adding doesn't clobber an existing value.
+So features can call it from every constructor and the user's edits in
+<code>settings.ini</code> are preserved.
+</p>
+
+<h2>7. Async polling for live UI</h2>
+
+<p>
+When you want a label to update every frame (player position, time-of-day,
+free-cam speed), don't poll from a WinForms timer — you'll either poll too
+slow or too fast. Instead:
+</p>
+
+<pre><code>public FeatureImpl()
+{
+    Task.Run(UpdateView);
+}
+
+private async Task UpdateView()
+{
+    while (!ShouldStop)
+    {
+        await Task.Delay(50);   // 20 Hz
+
+        var tcs = new TaskCompletionSource&lt;float&gt;();
+        GroundSceneCallbacks.AddUpdateLoopCall(() =&gt;
+            tcs.SetResult(Terrain.Get().GetTimeOfDay()));
+        var tod = await tcs.Task;
+
+        OnTodUpdated?.Invoke(tod);   // panel subscribes, marshals to UI
+    }
+}
+</code></pre>
+
+<p>Or simpler — re-enqueue an update-loop call each frame:</p>
+
+<pre><code>void OnUpdate()
+{
+    var t = Terrain.Get().GetTimeOfDay();
+    panel.BeginInvoke((MethodInvoker)(() =&gt; panel.UpdateTod(t)));
+    GroundSceneCallbacks.AddUpdateLoopCall(OnUpdate);
+}
+GroundSceneCallbacks.AddUpdateLoopCall(OnUpdate);
+</code></pre>
+
+<p>
+Pick whichever feels cleaner; the JT mostly uses the <code>Task.Delay</code> pattern
+for 10–20 Hz UI refresh.
+</p>
+
+<h2>8. Drag-drop as asset placement</h2>
+
+<p>
+The Object Browser's drag-drop pattern is general-purpose. Adapt it for any
+"drag from a listbox / treeview, drop into the live game world":
+</p>
+
+<div class="mermaid">
+sequenceDiagram
+  participant U as User
+  participant L as ListBox
+  participant DD as GameDragDropEventHandlers
+  participant W as Game world
+  participant S as Snapshot impl
+
+  U->>L: mousedown on item
+  L->>L: capture filename
+  U->>L: mousemove (with LMB)
+  L->>L: DoDragDrop(filename)
+
+  U->>W: drag over PanelGame
+  W->>DD: OnDragEnter fires
+  DD->>W: create temporary preview Object, addObjectNotifications
+  U->>W: drag-move
+  DD->>W: collide cursor → world point; reposition preview
+  U->>W: drop
+  DD->>S: snapshotImpl.AddNodeAt(previewPosition, filename)
+  DD->>W: destroy preview object
+</div>
+
+<p>
+The trick is <strong>showing live feedback</strong> during drag (the preview object
+follows the cursor) so the user knows what they're placing and where.
+</p>
+
+<h2>9. C++ shim only when necessary</h2>
+
+<p>Don't write a C++ half unless you need one of:</p>
+
+<ul>
+  <li><strong>Chat slash commands</strong> (<code>/foo</code>) — must register at <code>CuiChatWindow::ctor</code>
+    time, which is before the CLR is ready.</li>
+  <li><strong>A new detour</strong> that UtinniCore doesn't already wrap — you're adding a
+    <code>swg/&lt;subsystem&gt;/</code> entry.</li>
+  <li><strong>Per-frame work that's prohibitively expensive in managed code</strong> — rare;
+    the bridge is fast.</li>
+</ul>
+
+<p>
+In every other case, write a <code>IPlugin</code> / <code>IEditorPlugin</code> in C# and use the
+existing callbacks. If you do need C++, keep it to plugin scaffolding +
+forwarding to managed events (e.g. via <code>EventHandler&lt;T&gt;</code> raised on a shared
+static instance).
+</p>
+
+<h2>10. Disable controls until a scene is loaded</h2>
+
+<p>
+Most editor controls only make sense inside a scene. Wire enable/disable on
+<code>GameCallbacks</code>:
+</p>
+
+<pre><code>public MySubPanel()
+{
+    GameCallbacks.AddSetupSceneCall(() =&gt;
+        this.BeginInvoke((MethodInvoker)(() =&gt; SetEnabled(true))));
+    GameCallbacks.AddCleanupSceneCall(() =&gt;
+        this.BeginInvoke((MethodInvoker)(() =&gt; SetEnabled(false))));
+    SetEnabled(false);   // default
+}
+
+private void SetEnabled(bool enabled)
+{
+    foreach (Control c in Controls)
+        if (c is UtinniButton or UtinniNumericUpDown or UtinniTextbox)
+            c.Enabled = enabled;
+}
+</code></pre>
+
+<p>Better UX, fewer null-deref bugs in your handlers.</p>
+
+<h2>11. Name things with plugin prefixes</h2>
+
+<p>
+For hotkeys, INI sections, and anything else that might collide with other
+plugins, prefix:
+</p>
+
+<ul>
+  <li>Hotkey <code>Name</code> → <code>MyPlugin.SaveScene</code> not <code>SaveScene</code>.</li>
+  <li>Logger callouts → <code>[MyPlugin] ...</code> (use <code>Log.Info("[MyPlugin] " + msg)</code> or
+    rely on the <code>writeClassName</code> config flag).</li>
+</ul>
+
+<p>
+This is also why <code>[Plugins] plugin_N</code> in <code>ut.ini</code> is keyed by <em>directory
+name</em> — that directory name is your plugin's namespace.
+</p>
+
+<h2>12. Build outputs into <code>Plugins/&lt;Name&gt;/</code></h2>
+
+<p>
+The Directory.Build.props the VSIX wizard writes does this for you. If
+you're hand-rolling a project:
+</p>
+
+<pre><code>&lt;PropertyGroup&gt;
+  &lt;OutputPath&gt;$(SolutionDir)bin\$(Configuration)\Plugins\$(MSBuildProjectName)\&lt;/OutputPath&gt;
+&lt;/PropertyGroup&gt;
+</code></pre>
+
+<p>
+And reference <code>UtinniCoreDotNet.dll</code> with <code>Private=False</code> so you don't
+shadow the install's copy.
+</p>
+
+<h2>See also</h2>
+
+<ul>
+  <li><a href="jawa-toolbox.html">The Jawa Toolbox</a> — the worked example these patterns
+    come from.</li>
+  <li><a href="../../Utinni/docs/index.html">Utinni docs</a> — the framework these
+    patterns sit on top of.</li>
+</ul>
+
+</main>
+<footer>
+  UtinniPlugins — official plugins for the Utinni modding framework.
+</footer>
+<script src="https://cdn.jsdelivr.net/npm/mermaid/dist/mermaid.min.js"></script>
+<script>mermaid.initialize({ startOnLoad: true, theme: "dark" });</script>
+</body>
+</html>

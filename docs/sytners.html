@@ -1,0 +1,74 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>Sytner's plugin — UtinniPlugins</title>
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<link rel="stylesheet" href="style.css" />
+</head>
+<body>
+<header class="site">
+  <h1><span class="accent">UtinniPlugins</span> — Sytner's plugin (placeholder)</h1>
+  <div class="sub">A reserved tree for future work by James Webb (Sytner).</div>
+</header>
+<nav class="top">
+  <a href="index.html">Overview</a>
+  <a href="jawa-toolbox.html">The Jawa Toolbox</a>
+  <a href="patterns.html">Patterns</a>
+  <a href="sytners.html" class="active">Sytner's plugin</a>
+  <a href="../../Utinni/docs/index.html">↗ Utinni framework docs</a>
+</nav>
+<main>
+
+<h1>SytnersUtinniPlugin</h1>
+
+<p>A placeholder plugin tree. As of writing it contains a single header file:</p>
+
+<p><code>SytnersUtinniPlugin/sup.h</code>:</p>
+
+<pre><code>/*
+   ███████╗██╗   ██╗████████╗███╗   ██╗███████╗██████╗
+   ██╔════╝╚██╗ ██╔╝╚══██╔══╝████╗  ██║██╔════╝██╔══██╗
+   ███████╗ ╚████╔╝    ██║   ██╔██╗ ██║█████╗  ██████╔╝
+   ╚════██║  ╚██╔╝     ██║   ██║╚██╗██║██╔══╝  ██╔══██╗
+   ███████║   ██║      ██║   ██║ ╚████║███████╗██║  ██║
+   ╚══════╝   ╚═╝      ╚═╝   ╚═╝  ╚═══╝╚══════╝╚═╝  ╚═╝
+*/
+
+#pragma once
+
+using utinni_plugin = int;   // (placeholder)
+</code></pre>
+
+<p>
+There is no implementation, no project file, no plugin contract being
+fulfilled. The tree is reserved for future plugin work by James Webb
+(Sytner), credited in the Utinni README as the maintainer who pushed for
+the initial release.
+</p>
+
+<h2>What this means for us</h2>
+
+<ul>
+  <li><strong>Not a working plugin.</strong> Loading the <code>SytnersUtinniPlugin/</code> directory
+    via <code>ut.ini</code> would do nothing because the directory has no DLL.</li>
+  <li><strong>Worth keeping in the fork</strong> because (a) it's where Sytner's plugin will
+    eventually land upstream and (b) the empty tree carries no maintenance
+    cost.</li>
+  <li><strong>Don't take dependencies on it.</strong> Treat it as if the directory weren't
+    there.</li>
+</ul>
+
+<p>
+If at some point a real plugin lands here, we'll fold it into <a href="jawa-toolbox.html">the Jawa
+toolbox docs</a> style or write a dedicated page.
+</p>
+
+</main>
+<footer>
+  UtinniPlugins — official plugins for the Utinni modding framework.
+</footer>
+<script src="https://cdn.jsdelivr.net/npm/mermaid/dist/mermaid.min.js"></script>
+<script>mermaid.initialize({ startOnLoad: true, theme: "dark" });</script>
+</body>
+</html>

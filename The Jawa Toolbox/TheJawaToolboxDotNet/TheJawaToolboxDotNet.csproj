@@ -52,7 +52,12 @@
     <Reference Include="System.Windows.Forms" />
     <Reference Include="System.Xml" />
     <Reference Include="UtinniCoreDotNet">
-      <HintPath>..\..\..\Utinni\bin\RelWithDbgInfo\UtinniCoreDotNet.dll</HintPath>
+      <!-- Use $(Configuration) so Release|x86, Debug|x86, and RelWithDbgInfo|x86
+           builds each pick up the matching Utinni build output instead of always
+           hard-binding to RelWithDbgInfo. Pre-fix, building TJT Release|x86 failed
+           with CS0246 (UtinniCore / UtinniCoreDotNet namespaces missing) unless
+           you had also built Utinni RelWithDbgInfo|x86 beforehand. -->
+      <HintPath>..\..\..\Utinni\bin\$(Configuration)\UtinniCoreDotNet.dll</HintPath>
       <Private>False</Private>
     </Reference>
   </ItemGroup>

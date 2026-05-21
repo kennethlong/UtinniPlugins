@@ -59,10 +59,14 @@ public:
     }
 };
 
-extern "C"
+UTINNI_PLUGIN;
+
+utinni::UtinniPlugin* createPlugin()
 {
-    UTINNI_PLUGIN
-    {
-        return new TheJawaToolboxPlugin();
-    }
+    return new TheJawaToolboxPlugin();
+}
+
+void destroyPlugin(utinni::UtinniPlugin* p)
+{
+    delete p;
 }

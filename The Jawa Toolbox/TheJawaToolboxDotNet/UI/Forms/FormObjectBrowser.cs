@@ -77,6 +77,18 @@ namespace TJT.UI.Forms
         {
             InitializeComponent();
 
+            // Phase 6 (Utinni 06-05 / D-15): TJT now owns its brand icon. The Utinni framework's
+            // UtinniForm default was changed from TJT.ico to a neutral utinni.ico, so the toolbox
+            // sets its own icon here. Loaded from the plugin directory (mirrors how settings.ini is
+            // resolved in Plugin.cs); guarded so a missing file degrades to the framework default.
+            string tjtIconPath = System.IO.Path.Combine(
+                System.IO.Path.GetDirectoryName(System.Reflection.Assembly.GetExecutingAssembly().Location),
+                "Resources", "TJT.ico");
+            if (System.IO.File.Exists(tjtIconPath))
+            {
+                this.Icon = new System.Drawing.Icon(tjtIconPath);
+            }
+
             this.editorPlugin = editorPlugin;
             ini = editorPlugin.GetConfig();
 

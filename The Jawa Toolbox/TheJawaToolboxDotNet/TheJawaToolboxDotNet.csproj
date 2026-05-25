@@ -147,6 +147,16 @@
       <DependentUpon>ScenePanel.cs</DependentUpon>
     </EmbeddedResource>
   </ItemGroup>
-  <ItemGroup />
+  <ItemGroup>
+    <!-- Phase 6 (Utinni 06-05 / D-15): TJT brand assets, ejected from the Utinni framework
+         (UtinniCoreDotNet/Resources). TJT.ico is loaded at runtime by FormObjectBrowser; both
+         are copied next to the plugin DLL so the runtime path resolves. -->
+    <Content Include="Resources\TJT.ico">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
+    <Content Include="Resources\TJT.png">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
+  </ItemGroup>
   <Import Project="$(MSBuildToolsPath)\Microsoft.CSharp.targets" />
 </Project>

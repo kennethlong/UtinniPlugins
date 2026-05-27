@@ -414,21 +414,11 @@ namespace TJT.UI.Controls
                 lblStructuredTrunc.Visible = true;
             }
 
-            // The structured view is the PRIMARY region (Dock.Fill) so the table shows from its first
-            // row with its column header fully visible. When the payload is IFF, the universal chunk
-            // tree is a fixed top strip above it (not a Fill that squeezes the table); for non-IFF
-            // (.stf / .gui) there is no tree. Hex peek stays a collapsible bottom strip.
-            if (tvChunks.Visible)
-            {
-                tvChunks.Dock = DockStyle.Top;
-                tvChunks.Height = 150;
-            }
-            pnlStructured.Dock = DockStyle.Fill;
+            // Layout (proven 07-03 z-order): the chunk tree keeps Dock.Fill at the top, the structured
+            // view is a tall Dock.Bottom region below it, and the hex peek is a collapsible bottom
+            // strip. We do NOT touch Dock/z-order here — reordering a Fill control starves the others.
+            pnlStructured.Height = 320;
             pnlStructured.Visible = true;
-            pnlStructured.SendToBack();   // Fill control sits behind the docked edge controls
-            if (tvChunks.Visible) tvChunks.BringToFront();
-            pnlHex.BringToFront();
-            if (lblRawNote.Visible) lblRawNote.BringToFront();
         }
 
         private void HideStructured()
@@ -438,10 +428,6 @@ namespace TJT.UI.Controls
             lvStructured.Columns.Clear();
             lvStructured.EndUpdate();
             pnlStructured.Visible = false;
-            pnlStructured.Dock = DockStyle.Bottom;
-            // No structured view: the chunk tree reclaims the primary Fill region.
-            tvChunks.Dock = DockStyle.Fill;
-            tvChunks.SendToBack();
         }
 
         private static string CellText(object cell)

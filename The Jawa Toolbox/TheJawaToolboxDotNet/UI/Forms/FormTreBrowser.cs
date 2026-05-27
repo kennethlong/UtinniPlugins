@@ -53,7 +53,6 @@ namespace TJT.UI.Forms
         private PathNode _root;                 // directory trie for lazy tree navigation
         private HashSet<string> _loaded;        // Game.Repository install-time snapshot overlay (null = no live client)
         private Font _boldFont;
-        private bool _loadStarted;
 
         public FormTreBrowser(IEditorPlugin editorPlugin)
         {
@@ -108,9 +107,12 @@ namespace TJT.UI.Forms
             lblLegend.ForeColor = Colors.Font();
             cbTypeFacet.SelectedIndex = 0;
 
-            // Start the disk enumeration once the handle exists (so the per-branch Control.Invoke
-            // marshaling from the background Task is valid).
-            this.Shown += FormTreBrowser_Shown;
+            // Kick off the disk enumeration from the ctor (matching FormObjectBrowser.LoadRepo) —
+            // the heavy work runs off-thread via Task.Run and the result is applied back on the UI
+            // thread through the captured SynchronizationContext (await continuation), so it does
+            // NOT depend on the Shown event, which does not reliably fire for forms shown inside
+            // the injected SWG message loop.
+            StartLoad();
         }
 
         private void CreateSettings()
@@ -145,78 +147,95 @@ namespace TJT.UI.Forms
             return formTreBrowser;
         }
 
-        // ── Background enumeration ──────────────────────────────────────────
+        // ── Enumeration (ctor-driven; heavy work off-thread, UI applied via await continuation) ──
 
         private const string BaseTitle = "TRE Browser";
 
-        private void FormTreBrowser_Shown(object sender, EventArgs e)
+        private sealed class LoadResult
         {
-            if (_loadStarted) return;
-            _loadStarted = true;
-            lblStatus.Text = "Loading archive index…";
-            this.Text = BaseTitle + " — Loading…"; // titlebar is the always-visible status channel
-            Task.Run((Action)LoadWorker);
+            public string Dir;
+            public IReadOnlyList<string> AllPaths;
+            public PathNode Root;
+            public HashSet<string> Loaded;
+            public string Error;   // non-null = a user-facing failure/empty state
         }
 
-        private void LoadWorker()
+        private async void StartLoad()
         {
+            lblStatus.Text = "Loading archive index…";
+            SetTitle("Loading…");
+
+            LoadResult r;
             try
             {
-                string dir = ResolveClientTreDir();
-                if (dir == null)
-                {
-                    // First-run error state — never a silent empty tree (review item 7).
-                    Log.Info("[TreBrowser] no client .tre directory resolved (module/working/ini all lacked *.toc/*.tre)");
-                    MarshalLegend("Could not locate the client .tre directory — set [TreBrowser] clientDir");
-                    MarshalStatus("No .tre/.toc found");
-                    MarshalTitle("No .tre/.toc found");
-                    return;
-                }
-                Log.Info("[TreBrowser] resolved client .tre directory: '" + dir + "'");
-
-                // Consume ONLY the shared TreArchiveIndex facade (D-08, criterion #4) — the UI never
-                // calls the lower-level master-index / per-archive readers directly. The facade
-                // prefers a COT2000/SearchTOC master index, else per-archive enumeration. Built
-                // once, paths only (no payloads).
-                TreArchiveIndex index = TreArchiveIndex.Build(dir);
-                _allPaths = index.AllPaths;
-                _root = BuildTrie(_allPaths);
-                Log.Info("[TreBrowser] enumerated " + _allPaths.Count + " paths from '" + dir + "'");
-
-                if (_allPaths.Count == 0)
-                {
-                    MarshalLegend("No entries found under: " + dir);
-                    MarshalStatus("0 paths — '" + dir + "'");
-                    MarshalTitle("0 paths — " + dir);
-                    return;
-                }
-
-                _loaded = TryBuildLoadedOverlay();
-
-                // Lazy tree: only the top-level branches are added now; children are filled on
-                // BeforeExpand. Per-branch BATCHED marshaling (review consensus #4): one
-                // Control.Invoke per top-level branch, NEVER one Invoke per node (213k nodes).
-                List<string> topKeys = _root.Children.Keys.OrderBy(k => k, StringComparer.OrdinalIgnoreCase).ToList();
-                foreach (string key in topKeys)
-                {
-                    if (!IsHandleCreated) return;
-                    PathNode branch = _root.Children[key];
-                    this.Invoke((Action)(() => tvTre.Nodes.Add(MakeNode(key, branch))));
-                }
-
-                MarshalLegend(_loaded != null
-                    ? "Dimmed = on disk, not currently loaded"
-                    : "Overlay unavailable — no live client");
-                MarshalStatus(_allPaths.Count + " paths");
-                MarshalTitle(_allPaths.Count + " paths");
+                // Heavy disk enumeration OFF the UI thread; ResolveClientTreDir/TreArchiveIndex.Build/
+                // TryBuildLoadedOverlay touch no WinForms controls (Log.Info is thread-safe).
+                r = await Task.Run((Func<LoadResult>)DoHeavyLoad);
             }
             catch (Exception ex)
             {
                 Log.Info("[TreBrowser] load failed: " + ex);
-                MarshalLegend("Failed to load archive index: " + ex.Message);
-                MarshalStatus("Load failed (see Utinni log)");
-                MarshalTitle("load failed (see Utinni log)");
+                lblLegend.Text = "Failed to load archive index: " + ex.Message;
+                SetTitle("load failed (see Utinni log)");
+                return;
             }
+
+            // Back on the UI thread (captured SynchronizationContext) — safe to touch controls
+            // directly, no Control.Invoke needed.
+            if (r.Error != null)
+            {
+                Log.Info("[TreBrowser] " + r.Error);
+                lblLegend.Text = r.Error;
+                SetTitle(r.Dir == null ? "No .tre/.toc found" : "0 paths — " + r.Dir);
+                return;
+            }
+
+            _allPaths = r.AllPaths;
+            _root = r.Root;
+            _loaded = r.Loaded;
+
+            ShowFullTree(); // populates the top-level branches (lazy children via BeforeExpand)
+            lblLegend.Text = _loaded != null
+                ? "Dimmed = on disk, not currently loaded"
+                : "Overlay unavailable — no live client";
+            SetTitle(_allPaths.Count + " paths");
+        }
+
+        private LoadResult DoHeavyLoad()
+        {
+            var r = new LoadResult();
+            string dir = ResolveClientTreDir();   // logs each candidate dir
+            if (dir == null)
+            {
+                Log.Info("[TreBrowser] no client .tre directory resolved (module/working/ini all lacked *.toc/*.tre)");
+                r.Error = "Could not locate the client .tre directory — set [TreBrowser] clientDir";
+                return r;
+            }
+            r.Dir = dir;
+            Log.Info("[TreBrowser] resolved client .tre directory: '" + dir + "'");
+
+            // Consume ONLY the shared TreArchiveIndex facade (D-08, criterion #4) — the UI never
+            // calls the lower-level master-index / per-archive readers directly. The facade prefers
+            // a COT2000/SearchTOC master index, else per-archive enumeration. Paths only (no payloads).
+            TreArchiveIndex index = TreArchiveIndex.Build(dir);
+            r.AllPaths = index.AllPaths;
+            Log.Info("[TreBrowser] enumerated " + r.AllPaths.Count + " paths from '" + dir + "'");
+            if (r.AllPaths.Count == 0)
+            {
+                r.Error = "No entries found under: " + dir;
+                return r;
+            }
+
+            r.Root = BuildTrie(r.AllPaths);
+            r.Loaded = TryBuildLoadedOverlay();
+            return r;
+        }
+
+        private void SetTitle(string suffix)
+        {
+            this.Text = string.IsNullOrEmpty(suffix) ? BaseTitle : BaseTitle + " — " + suffix;
+            // UtinniForm draws the title in OnPaint; force a repaint so runtime Text changes show.
+            this.Invalidate();
         }
 
         /// <summary>
@@ -522,30 +541,6 @@ namespace TJT.UI.Forms
         }
 
         // ── helpers ─────────────────────────────────────────────────────────
-
-        private void MarshalStatus(string s)
-        {
-            if (IsHandleCreated)
-            {
-                BeginInvoke((Action)(() => lblStatus.Text = s));
-            }
-        }
-
-        private void MarshalLegend(string s)
-        {
-            if (IsHandleCreated)
-            {
-                BeginInvoke((Action)(() => lblLegend.Text = s));
-            }
-        }
-
-        private void MarshalTitle(string suffix)
-        {
-            if (IsHandleCreated)
-            {
-                BeginInvoke((Action)(() => this.Text = string.IsNullOrEmpty(suffix) ? BaseTitle : BaseTitle + " — " + suffix));
-            }
-        }
 
         private static string TypeTag(string path)
         {

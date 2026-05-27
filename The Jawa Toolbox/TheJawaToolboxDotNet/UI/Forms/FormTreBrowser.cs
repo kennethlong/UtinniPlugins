@@ -458,7 +458,14 @@ namespace TJT.UI.Forms
                 return;
             }
 
-            if (LooksLikeIff(payload))
+            // The .stf string table is NOT IFF (raw magic+version binary, 07-04a) — route it to the
+            // dedicated structured (id/text) view before the IFF FORM check.
+            if (UtinniCoreDotNet.Formats.Decoders.StringTableDecoder.LooksLikeStf(payload))
+            {
+                meta.RootFormTag = "STF";
+                _detail.ShowStringTable(meta, payload);
+            }
+            else if (LooksLikeIff(payload))
             {
                 if (payload.Length >= 12)
                 {
@@ -468,7 +475,8 @@ namespace TJT.UI.Forms
             }
             else
             {
-                // Readable but NOT an IFF FORM — show the real bytes, NOT the encrypted copy (review item 12).
+                // Readable but NOT an IFF FORM (or .stf) — show the real bytes; the detail pane labels
+                // a .gui/ui path as a UI page (text), else the unsupported-raw note (review item 12).
                 _detail.ShowUnsupportedRaw(meta, payload);
             }
         }

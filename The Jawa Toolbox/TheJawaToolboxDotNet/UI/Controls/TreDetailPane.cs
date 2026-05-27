@@ -27,6 +27,7 @@ using System.Drawing;
 using System.IO;
 using System.Text;
 using System.Windows.Forms;
+using UtinniCoreDotNet.Formats.Decoders;
 using UtinniCoreDotNet.Formats.Iff;
 using UtinniCoreDotNet.Formats.Tre;
 using UtinniCoreDotNet.UI.Controls;
@@ -56,6 +57,9 @@ namespace TJT.UI.Controls
     public class TreDetailPane : UserControl
     {
         private const int HexCap = 4096;
+        // Row cap for the structured ListViews so a huge datatable cannot add hundreds of thousands
+        // of rows synchronously and freeze the UI thread (review LOW / T-07-17).
+        private const int StructuredRowCap = 5000;
 
         // Metadata strip
         private readonly UtinniLabel lblPath = ValueLabel();
@@ -71,7 +75,12 @@ namespace TJT.UI.Controls
         private readonly Panel pnlContent = new Panel();
         private readonly Panel pnlReadable = new Panel();
         private readonly TreeView tvChunks = new TreeView();
-        private readonly Panel pnlStructured = new Panel();   // 07-04b fills this
+        // 07-04b: per-type structured view — a uniform themed ListView (datatable rows, STF entries,
+        // object-template fields, mesh/shader/UI-page summaries), with a title + row-cap truncation label.
+        private readonly Panel pnlStructured = new Panel();
+        private readonly UtinniLabel lblStructuredTitle = new UtinniLabel();
+        private readonly ListView lvStructured = new ListView();
+        private readonly UtinniLabel lblStructuredTrunc = new UtinniLabel();
         private readonly Panel pnlHex = new Panel();
         private readonly UtinniButton btnHexToggle = new UtinniButton();
         private readonly TextBox txtHex = new TextBox();
@@ -137,6 +146,32 @@ namespace TJT.UI.Controls
             LoadIff(doc);
             lblRawNote.Visible = false;
             tvChunks.Visible = true;
+            RenderStructured(doc, meta);   // 07-04b: per-type structured view in pnlStructured
+            FillHex(payload);
+            ShowReadablePanel();
+        }
+
+        /// <summary>
+        /// 07-04b: Renders the non-IFF SWG string table (.stf) as a structured (id, text) view.
+        /// The .stf is not an IFF container, so there is no chunk tree — the metadata header, the
+        /// structured ListView, and the raw-hex peek render. Called by FormTreBrowser when the
+        /// resolved payload is recognized as a string table.
+        /// </summary>
+        public void ShowStringTable(TreMetadata meta, byte[] payload)
+        {
+            PopulateMeta(meta);
+            SetBanner(meta);
+            tvChunks.Visible = false;        // .stf is not IFF — no universal chunk tree
+            lblRawNote.Visible = false;
+            try
+            {
+                RenderStringTable(StringTableDecoder.Decode(payload));
+            }
+            catch (DecoderException ex)
+            {
+                ShowParseFailure(meta, ex.Message);
+                return;
+            }
             FillHex(payload);
             ShowReadablePanel();
         }
@@ -187,7 +222,19 @@ namespace TJT.UI.Controls
             // NOT the encrypted/extract copy (review item 12).
             tvChunks.Visible = false;
             lblRawNote.Visible = true;
-            lblRawNote.Text = "No IFF structure recognized — showing raw bytes.";
+
+            // 07-04b: SWG UI pages (.gui) are TEXT, not IFF — recognize them by the path/extension
+            // hint and label them as a UI page (criterion #3 coverage) while showing the raw text.
+            if (IffStructureSummary.IsUiPagePath(meta.Path))
+            {
+                lblRawNote.Text = "UI page (text format) — showing raw text.";
+                RenderUiPageSummary(meta, payload);
+            }
+            else
+            {
+                lblRawNote.Text = "No IFF structure recognized — showing raw bytes.";
+                HideStructured();
+            }
             FillHex(payload);
             ShowReadablePanel();
         }
@@ -199,6 +246,199 @@ namespace TJT.UI.Controls
             ShowInfo("Could not decode this file",
                 reason + ". The file may be truncated or use an unsupported layout. Other files are unaffected.",
                 true);
+        }
+
+        // ── 07-04b structured-view rendering (all via the shared Formats/Decoders — Pitfall 7) ──
+
+        /// <summary>
+        /// Dispatches the parsed IFF document to the matching per-type structured view in
+        /// pnlStructured. The same decoders the decode-iff CLI verb exercises (no UI-only decode).
+        /// Unrecognized types hide the structured view; the chunk tree + hex peek still render.
+        /// </summary>
+        private void RenderStructured(IffDocument doc, TreMetadata meta)
+        {
+            try
+            {
+                var root = doc != null ? doc.Root as IffContainerChunk : null;
+                string sub = root != null ? root.SubTypeId : null;
+
+                if (sub == "DTII")
+                {
+                    RenderDataTable(DataTableDecoder.Decode(doc));
+                    return;
+                }
+                if (sub == "MESH" || sub == "SKMG" || sub == "SKTM" || sub == "KFAT" || sub == "CKAT")
+                {
+                    var appearance = AppearanceSummary.Summarize(doc);
+                    if (appearance != null) { RenderAppearance(appearance); return; }
+                }
+                if (sub == "SSHT" || sub == "CSHD")
+                {
+                    RenderStructure(IffStructureSummary.Summarize(doc, meta.Path), "Shader");
+                    return;
+                }
+                if (ObjectTemplateDecoder.LooksLikeObjectTemplate(doc != null ? doc.Root : null))
+                {
+                    RenderObjectTemplate(ObjectTemplateDecoder.Decode(doc));
+                    return;
+                }
+                HideStructured(); // unrecognized IFF — chunk tree + hex still render (UI-SPEC)
+            }
+            catch (DecoderException)
+            {
+                HideStructured(); // a decoder problem hides section 4; one bad file never crashes the pane
+            }
+        }
+
+        private void RenderDataTable(DataTableView dt)
+        {
+            BeginStructured("Datatable — " + dt.Columns.Count + " cols × " + dt.Rows.Count + " rows");
+            foreach (var c in dt.Columns)
+            {
+                lvStructured.Columns.Add(c.Name + " (" + SpecChar(c.Kind) + ")");
+            }
+            int shown = Math.Min(StructuredRowCap, dt.Rows.Count);
+            for (int r = 0; r < shown; r++)
+            {
+                object[] cells = dt.Rows[r];
+                var item = new ListViewItem(CellText(cells.Length > 0 ? cells[0] : null));
+                for (int i = 1; i < cells.Length; i++) item.SubItems.Add(CellText(cells[i]));
+                lvStructured.Items.Add(item);
+            }
+            EndStructured(dt.Rows.Count, shown);
+        }
+
+        private void RenderStringTable(StfTable stf)
+        {
+            BeginStructured("String table — " + stf.Entries.Count + " entries");
+            lvStructured.Columns.Add("String ID");
+            lvStructured.Columns.Add("Name");
+            lvStructured.Columns.Add("Text");
+            int shown = Math.Min(StructuredRowCap, stf.Entries.Count);
+            for (int i = 0; i < shown; i++)
+            {
+                StfEntry e = stf.Entries[i];
+                var item = new ListViewItem(e.Id.ToString());
+                item.SubItems.Add(e.Name ?? "");
+                item.SubItems.Add(e.Text ?? "");
+                lvStructured.Items.Add(item);
+            }
+            EndStructured(stf.Entries.Count, shown);
+        }
+
+        private void RenderObjectTemplate(ObjectTemplateView ot)
+        {
+            string baseSuffix = string.IsNullOrEmpty(ot.BaseTemplate) ? "" : " : " + ot.BaseTemplate;
+            BeginStructured("Object template — " + ot.RootType + baseSuffix);
+            lvStructured.Columns.Add("Field");
+            lvStructured.Columns.Add("Value");
+            lvStructured.Columns.Add("Inherited from");
+            int shown = Math.Min(StructuredRowCap, ot.Fields.Count);
+            for (int i = 0; i < shown; i++)
+            {
+                ObjectTemplateField f = ot.Fields[i];
+                var item = new ListViewItem(f.Name);
+                item.SubItems.Add(f.Value ?? "");
+                item.SubItems.Add(f.InheritedFrom ?? "");
+                lvStructured.Items.Add(item);
+            }
+            EndStructured(ot.Fields.Count, shown);
+        }
+
+        private void RenderAppearance(AppearanceInfo a)
+        {
+            BeginStructured("Appearance — " + a.Kind);
+            lvStructured.Columns.Add("Property");
+            lvStructured.Columns.Add("Value");
+            AddKv("Kind", a.Kind);
+            if (a.VertexCount > 0) AddKv("Vertices", a.VertexCount.ToString());
+            if (a.ShaderCount > 0) AddKv("Shaders", a.ShaderCount.ToString());
+            if (a.JointCount > 0) AddKv("Joints", a.JointCount.ToString());
+            if (a.FrameCount > 0) AddKv("Frames", a.FrameCount.ToString());
+            int jointsShown = 0;
+            foreach (string name in a.JointNames)
+            {
+                if (jointsShown >= StructuredRowCap) break;
+                AddKv("Joint " + jointsShown, name);
+                jointsShown++;
+            }
+            EndStructured(a.JointNames.Count, jointsShown);
+        }
+
+        private void RenderStructure(StructureInfo s, string label)
+        {
+            BeginStructured(label + " — " + s.RootTag);
+            lvStructured.Columns.Add("Property");
+            lvStructured.Columns.Add("Value");
+            AddKv("Root tag", s.RootTag);
+            AddKv("Recognized as", s.RecognizedAs);
+            AddKv("Child count", s.ChildCount.ToString());
+            AddKv("Child tags", string.Join(", ", s.ChildTags));
+            EndStructured(0, 0);
+        }
+
+        private void RenderUiPageSummary(TreMetadata meta, byte[] payload)
+        {
+            BeginStructured("UI page (text)");
+            lvStructured.Columns.Add("Property");
+            lvStructured.Columns.Add("Value");
+            AddKv("Type", "UI page (.gui, text — not IFF)");
+            AddKv("Path", meta.Path ?? "");
+            AddKv("Size", (payload != null ? payload.Length : 0) + " bytes");
+            EndStructured(0, 0);
+        }
+
+        private void AddKv(string key, string value)
+        {
+            var item = new ListViewItem(key);
+            item.SubItems.Add(value ?? "");
+            lvStructured.Items.Add(item);
+        }
+
+        private void BeginStructured(string title)
+        {
+            lvStructured.BeginUpdate();
+            lvStructured.Items.Clear();
+            lvStructured.Columns.Clear();
+            lblStructuredTitle.Text = title;
+            lblStructuredTrunc.Visible = false;
+        }
+
+        private void EndStructured(int total, int shown)
+        {
+            foreach (ColumnHeader col in lvStructured.Columns) col.Width = -2; // autosize header+content
+            lvStructured.EndUpdate();
+            if (total > shown)
+            {
+                lblStructuredTrunc.Text = "… " + total + " rows — showing first " + shown;
+                lblStructuredTrunc.Visible = true;
+            }
+            pnlStructured.Height = tvChunks.Visible ? 240 : 460;
+            pnlStructured.Visible = true;
+        }
+
+        private void HideStructured()
+        {
+            lvStructured.BeginUpdate();
+            lvStructured.Items.Clear();
+            lvStructured.Columns.Clear();
+            lvStructured.EndUpdate();
+            pnlStructured.Visible = false;
+        }
+
+        private static string CellText(object cell)
+        {
+            return cell == null ? "" : Convert.ToString(cell, System.Globalization.CultureInfo.InvariantCulture);
+        }
+
+        private static string SpecChar(DataCellKind kind)
+        {
+            switch (kind)
+            {
+                case DataCellKind.Int: return "i";
+                case DataCellKind.Float: return "f";
+                default: return "s";
+            }
         }
 
         // ── rendering helpers ──
@@ -427,9 +667,34 @@ namespace TJT.UI.Controls
             pnlHex.Controls.Add(btnHexToggle);
 
             pnlStructured.Dock = DockStyle.Bottom;
-            pnlStructured.Height = 0;
+            pnlStructured.Height = 240;
             pnlStructured.BackColor = Colors.Primary();
-            pnlStructured.Visible = false; // 07-04b fills the per-type structured views here
+            pnlStructured.Visible = false; // shown by RenderStructured when a view is recognized
+
+            // Fill control FIRST, then the Top/Bottom edge labels (layout-order convention).
+            lvStructured.Dock = DockStyle.Fill;
+            lvStructured.View = View.Details;
+            lvStructured.FullRowSelect = true;
+            lvStructured.GridLines = false;
+            lvStructured.HideSelection = false;
+            lvStructured.BackColor = Colors.PrimaryHighlight();
+            lvStructured.ForeColor = Colors.Font();
+            lvStructured.BorderStyle = BorderStyle.None;
+
+            lblStructuredTrunc.Dock = DockStyle.Bottom;
+            lblStructuredTrunc.AutoSize = false;
+            lblStructuredTrunc.Height = 16;
+            lblStructuredTrunc.ForeColor = Colors.FontDisabled();
+            lblStructuredTrunc.Visible = false;
+
+            lblStructuredTitle.Dock = DockStyle.Top;
+            lblStructuredTitle.AutoSize = false;
+            lblStructuredTitle.Height = 18;
+            lblStructuredTitle.ForeColor = Colors.Font();
+
+            pnlStructured.Controls.Add(lvStructured);
+            pnlStructured.Controls.Add(lblStructuredTrunc);
+            pnlStructured.Controls.Add(lblStructuredTitle);
 
             lblRawNote.Dock = DockStyle.Top;
             lblRawNote.AutoSize = false;

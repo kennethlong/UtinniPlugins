@@ -147,11 +147,14 @@ namespace TJT.UI.Forms
 
         // ── Background enumeration ──────────────────────────────────────────
 
+        private const string BaseTitle = "TRE Browser";
+
         private void FormTreBrowser_Shown(object sender, EventArgs e)
         {
             if (_loadStarted) return;
             _loadStarted = true;
             lblStatus.Text = "Loading archive index…";
+            this.Text = BaseTitle + " — Loading…"; // titlebar is the always-visible status channel
             Task.Run((Action)LoadWorker);
         }
 
@@ -166,6 +169,7 @@ namespace TJT.UI.Forms
                     Log.Info("[TreBrowser] no client .tre directory resolved (module/working/ini all lacked *.toc/*.tre)");
                     MarshalLegend("Could not locate the client .tre directory — set [TreBrowser] clientDir");
                     MarshalStatus("No .tre/.toc found");
+                    MarshalTitle("No .tre/.toc found");
                     return;
                 }
                 Log.Info("[TreBrowser] resolved client .tre directory: '" + dir + "'");
@@ -183,6 +187,7 @@ namespace TJT.UI.Forms
                 {
                     MarshalLegend("No entries found under: " + dir);
                     MarshalStatus("0 paths — '" + dir + "'");
+                    MarshalTitle("0 paths — " + dir);
                     return;
                 }
 
@@ -203,12 +208,14 @@ namespace TJT.UI.Forms
                     ? "Dimmed = on disk, not currently loaded"
                     : "Overlay unavailable — no live client");
                 MarshalStatus(_allPaths.Count + " paths");
+                MarshalTitle(_allPaths.Count + " paths");
             }
             catch (Exception ex)
             {
                 Log.Info("[TreBrowser] load failed: " + ex);
                 MarshalLegend("Failed to load archive index: " + ex.Message);
                 MarshalStatus("Load failed (see Utinni log)");
+                MarshalTitle("load failed (see Utinni log)");
             }
         }
 
@@ -529,6 +536,14 @@ namespace TJT.UI.Forms
             if (IsHandleCreated)
             {
                 BeginInvoke((Action)(() => lblLegend.Text = s));
+            }
+        }
+
+        private void MarshalTitle(string suffix)
+        {
+            if (IsHandleCreated)
+            {
+                BeginInvoke((Action)(() => this.Text = string.IsNullOrEmpty(suffix) ? BaseTitle : BaseTitle + " — " + suffix));
             }
         }
 

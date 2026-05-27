@@ -55,6 +55,7 @@ namespace TJT
             ini = new UtINI(Path.GetDirectoryName(Assembly.GetExecutingAssembly().Location) + "\\settings.ini");
 
             forms.Add(new FormObjectBrowser(this));
+            forms.Add(new FormTreBrowser(this));
 
             panels.Add(new SubPanelContainer("Controls", new SubPanel[]
             {

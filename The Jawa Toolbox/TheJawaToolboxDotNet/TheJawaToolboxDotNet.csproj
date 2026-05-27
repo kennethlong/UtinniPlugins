@@ -72,6 +72,12 @@
     <Compile Include="UI\Forms\FormObjectBrowser.designer.cs">
       <DependentUpon>FormObjectBrowser.cs</DependentUpon>
     </Compile>
+    <Compile Include="UI\Forms\FormTreBrowser.cs">
+      <SubType>Form</SubType>
+    </Compile>
+    <Compile Include="UI\Forms\FormTreBrowser.Designer.cs">
+      <DependentUpon>FormTreBrowser.cs</DependentUpon>
+    </Compile>
     <Compile Include="UI\Forms\FormSnapshotSaveAsDialog.cs">
       <SubType>Form</SubType>
     </Compile>

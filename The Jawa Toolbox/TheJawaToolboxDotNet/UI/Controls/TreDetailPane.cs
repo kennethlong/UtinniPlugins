@@ -413,8 +413,22 @@ namespace TJT.UI.Controls
                 lblStructuredTrunc.Text = "… " + total + " rows — showing first " + shown;
                 lblStructuredTrunc.Visible = true;
             }
-            pnlStructured.Height = tvChunks.Visible ? 240 : 460;
+
+            // The structured view is the PRIMARY region (Dock.Fill) so the table shows from its first
+            // row with its column header fully visible. When the payload is IFF, the universal chunk
+            // tree is a fixed top strip above it (not a Fill that squeezes the table); for non-IFF
+            // (.stf / .gui) there is no tree. Hex peek stays a collapsible bottom strip.
+            if (tvChunks.Visible)
+            {
+                tvChunks.Dock = DockStyle.Top;
+                tvChunks.Height = 150;
+            }
+            pnlStructured.Dock = DockStyle.Fill;
             pnlStructured.Visible = true;
+            pnlStructured.SendToBack();   // Fill control sits behind the docked edge controls
+            if (tvChunks.Visible) tvChunks.BringToFront();
+            pnlHex.BringToFront();
+            if (lblRawNote.Visible) lblRawNote.BringToFront();
         }
 
         private void HideStructured()
@@ -424,6 +438,10 @@ namespace TJT.UI.Controls
             lvStructured.Columns.Clear();
             lvStructured.EndUpdate();
             pnlStructured.Visible = false;
+            pnlStructured.Dock = DockStyle.Bottom;
+            // No structured view: the chunk tree reclaims the primary Fill region.
+            tvChunks.Dock = DockStyle.Fill;
+            tvChunks.SendToBack();
         }
 
         private static string CellText(object cell)
@@ -636,9 +654,9 @@ namespace TJT.UI.Controls
             tvChunks.HideSelection = false;
             tvChunks.ShowLines = true;
 
-            // hex peek (collapsed by default via the toggle button)
+            // hex peek (collapsed by default via the toggle button — 22px header only until expanded)
             pnlHex.Dock = DockStyle.Bottom;
-            pnlHex.Height = 180;
+            pnlHex.Height = 22;
             pnlHex.BackColor = Colors.Primary();
 
             btnHexToggle.Dock = DockStyle.Top;

@@ -74,15 +74,19 @@ namespace TJT.UI.Controls
         // Content area + state panels
         private readonly Panel pnlContent = new Panel();
         private readonly Panel pnlReadable = new Panel();
+        // Three resizable sections (07-04b): chunk tree (top) / structured view (middle) / raw bytes
+        // (bottom), separated by two splitters so expanding the raw-bytes view never clobbers the tree.
+        private readonly SplitContainer splitOuter = new SplitContainer(); // tree | (table+hex)
+        private readonly SplitContainer splitInner = new SplitContainer(); // table | hex
         private readonly TreeView tvChunks = new TreeView();
-        // 07-04b: per-type structured view — a uniform themed ListView (datatable rows, STF entries,
+        // per-type structured view — a uniform themed ListView (datatable rows, STF entries,
         // object-template fields, mesh/shader/UI-page summaries), with a title + row-cap truncation label.
         private readonly Panel pnlStructured = new Panel();
         private readonly UtinniLabel lblStructuredTitle = new UtinniLabel();
         private readonly ListView lvStructured = new ListView();
         private readonly UtinniLabel lblStructuredTrunc = new UtinniLabel();
         private readonly Panel pnlHex = new Panel();
-        private readonly UtinniButton btnHexToggle = new UtinniButton();
+        private readonly UtinniLabel lblHexHeader = new UtinniLabel();
         private readonly TextBox txtHex = new TextBox();
         private readonly UtinniLabel lblRawNote = new UtinniLabel();
         private readonly Panel pnlInfo = new Panel();
@@ -145,8 +149,8 @@ namespace TJT.UI.Controls
 
             LoadIff(doc);
             lblRawNote.Visible = false;
-            tvChunks.Visible = true;
-            RenderStructured(doc, meta);   // 07-04b: per-type structured view in pnlStructured
+            splitOuter.Panel1Collapsed = false; // IFF — the chunk-tree section is shown
+            RenderStructured(doc, meta);   // 07-04b: per-type structured view in the middle section
             FillHex(payload);
             ShowReadablePanel();
         }
@@ -161,7 +165,7 @@ namespace TJT.UI.Controls
         {
             PopulateMeta(meta);
             SetBanner(meta);
-            tvChunks.Visible = false;        // .stf is not IFF — no universal chunk tree
+            splitOuter.Panel1Collapsed = true; // .stf is not IFF — no universal chunk tree section
             lblRawNote.Visible = false;
             try
             {
@@ -220,7 +224,7 @@ namespace TJT.UI.Controls
             SetBanner(meta);
             // A NON-enumerate-only payload whose bytes are NOT an IFF FORM — show the real bytes,
             // NOT the encrypted/extract copy (review item 12).
-            tvChunks.Visible = false;
+            splitOuter.Panel1Collapsed = true; // not IFF — no chunk-tree section
             lblRawNote.Visible = true;
 
             // 07-04b: SWG UI pages (.gui) are TEXT, not IFF — recognize them by the path/extension
@@ -414,11 +418,9 @@ namespace TJT.UI.Controls
                 lblStructuredTrunc.Visible = true;
             }
 
-            // Layout (proven 07-03 z-order): the chunk tree keeps Dock.Fill at the top, the structured
-            // view is a tall Dock.Bottom region below it, and the hex peek is a collapsible bottom
-            // strip. We do NOT touch Dock/z-order here — reordering a Fill control starves the others.
-            pnlStructured.Height = 320;
-            pnlStructured.Visible = true;
+            // Show the structured section (un-collapse its splitter panel). The table fills the
+            // section and scrolls on overflow; the tree and raw-bytes sections are independent.
+            splitInner.Panel1Collapsed = false;
         }
 
         private void HideStructured()
@@ -427,7 +429,7 @@ namespace TJT.UI.Controls
             lvStructured.Items.Clear();
             lvStructured.Columns.Clear();
             lvStructured.EndUpdate();
-            pnlStructured.Visible = false;
+            splitInner.Panel1Collapsed = true; // no structured view — raw bytes fills the inner split
         }
 
         private static string CellText(object cell)
@@ -629,58 +631,30 @@ namespace TJT.UI.Controls
             pnlContent.Dock = DockStyle.Fill;
             pnlContent.BackColor = Colors.Primary();
 
-            // ── readable panel: chunk tree (fill) + structured placeholder (bottom) + hex peek (bottom) ──
+            // ── readable panel: three resizable sections (tree / structured / raw bytes) split by
+            //    two horizontal splitters, plus an optional note strip on top. Each section's primary
+            //    control (TreeView / ListView / TextBox) shows its OWN scrollbars on overflow. ──
             pnlReadable.Dock = DockStyle.Fill;
             pnlReadable.BackColor = Colors.Primary();
 
+            // Section 1 — universal IFF chunk tree.
             tvChunks.Dock = DockStyle.Fill;
             tvChunks.BackColor = Colors.PrimaryHighlight();
             tvChunks.ForeColor = Colors.Font();
             tvChunks.BorderStyle = BorderStyle.None;
             tvChunks.HideSelection = false;
-            tvChunks.ShowLines = true;
+            tvChunks.ShowLines = true;   // TreeView scrolls natively when nodes overflow
 
-            // hex peek (collapsed by default via the toggle button — 22px header only until expanded)
-            pnlHex.Dock = DockStyle.Bottom;
-            pnlHex.Height = 22;
-            pnlHex.BackColor = Colors.Primary();
-
-            btnHexToggle.Dock = DockStyle.Top;
-            btnHexToggle.Height = 20;
-            btnHexToggle.Text = "Raw hex ▾";
-            btnHexToggle.ForeColor = Colors.Font();
-            btnHexToggle.Click += (s, e) =>
-            {
-                txtHex.Visible = !txtHex.Visible;
-                pnlHex.Height = txtHex.Visible ? 180 : 22;
-                btnHexToggle.Text = txtHex.Visible ? "Raw hex ▴" : "Raw hex ▾";
-            };
-
-            txtHex.Dock = DockStyle.Fill;
-            txtHex.Multiline = true;
-            txtHex.ReadOnly = true;
-            txtHex.ScrollBars = ScrollBars.Both;
-            txtHex.WordWrap = false;
-            txtHex.BackColor = Colors.PrimaryHighlight();
-            txtHex.ForeColor = Colors.Font();
-            txtHex.BorderStyle = BorderStyle.None;
-            txtHex.Font = new Font("Consolas", 9f); // the monospace exception (UI-SPEC Typography)
-            txtHex.Visible = false;                 // collapsed by default
-
-            pnlHex.Controls.Add(txtHex);
-            pnlHex.Controls.Add(btnHexToggle);
-
-            pnlStructured.Dock = DockStyle.Bottom;
-            pnlStructured.Height = 240;
+            // Section 2 — per-type structured view (title + ListView + truncation label).
+            pnlStructured.Dock = DockStyle.Fill;
             pnlStructured.BackColor = Colors.Primary();
-            pnlStructured.Visible = false; // shown by RenderStructured when a view is recognized
 
-            // Fill control FIRST, then the Top/Bottom edge labels (layout-order convention).
             lvStructured.Dock = DockStyle.Fill;
             lvStructured.View = View.Details;
             lvStructured.FullRowSelect = true;
             lvStructured.GridLines = false;
             lvStructured.HideSelection = false;
+            lvStructured.Scrollable = true;  // native vertical/horizontal scrollbars on overflow
             lvStructured.BackColor = Colors.PrimaryHighlight();
             lvStructured.ForeColor = Colors.Font();
             lvStructured.BorderStyle = BorderStyle.None;
@@ -696,9 +670,60 @@ namespace TJT.UI.Controls
             lblStructuredTitle.Height = 18;
             lblStructuredTitle.ForeColor = Colors.Font();
 
-            pnlStructured.Controls.Add(lvStructured);
+            pnlStructured.Controls.Add(lvStructured);    // Fill first
             pnlStructured.Controls.Add(lblStructuredTrunc);
             pnlStructured.Controls.Add(lblStructuredTitle);
+
+            // Section 3 — raw bytes (hex+ASCII dump). Always present; resize via the splitter.
+            pnlHex.Dock = DockStyle.Fill;
+            pnlHex.BackColor = Colors.Primary();
+
+            txtHex.Dock = DockStyle.Fill;
+            txtHex.Multiline = true;
+            txtHex.ReadOnly = true;
+            txtHex.ScrollBars = ScrollBars.Both;  // overflow scrollbars
+            txtHex.WordWrap = false;
+            txtHex.BackColor = Colors.PrimaryHighlight();
+            txtHex.ForeColor = Colors.Font();
+            txtHex.BorderStyle = BorderStyle.None;
+            txtHex.Font = new Font("Consolas", 9f); // the monospace exception (UI-SPEC Typography)
+
+            lblHexHeader.Dock = DockStyle.Top;
+            lblHexHeader.AutoSize = false;
+            lblHexHeader.Height = 18;
+            lblHexHeader.Text = "Raw bytes";
+            lblHexHeader.ForeColor = Colors.FontDisabled();
+
+            pnlHex.Controls.Add(txtHex);    // Fill first
+            pnlHex.Controls.Add(lblHexHeader);
+
+            // ── inner splitter: structured view (Panel1) | raw bytes (Panel2) ──
+            // 07-02 gotcha: set Size BEFORE SplitterDistance or the ctor throws and the plugin's MEF
+            // load fails. Definite sizes here keep both SplitterDistances valid at construction.
+            splitInner.Dock = DockStyle.Fill;
+            splitInner.Orientation = Orientation.Horizontal;
+            splitInner.BackColor = Colors.PrimaryHighlight();
+            splitInner.SplitterWidth = 4;
+            splitInner.Panel1MinSize = 40;
+            splitInner.Panel2MinSize = 40;
+            splitInner.FixedPanel = FixedPanel.Panel2; // raw-bytes keeps its size on window resize
+            splitInner.Size = new Size(700, 460);
+            splitInner.SplitterDistance = 300;
+            splitInner.Panel1.Controls.Add(pnlStructured);
+            splitInner.Panel2.Controls.Add(pnlHex);
+
+            // ── outer splitter: chunk tree (Panel1) | inner splitter (Panel2) ──
+            splitOuter.Dock = DockStyle.Fill;
+            splitOuter.Orientation = Orientation.Horizontal;
+            splitOuter.BackColor = Colors.PrimaryHighlight();
+            splitOuter.SplitterWidth = 4;
+            splitOuter.Panel1MinSize = 40;
+            splitOuter.Panel2MinSize = 80;
+            splitOuter.FixedPanel = FixedPanel.Panel1; // tree keeps its size on window resize
+            splitOuter.Size = new Size(700, 600);
+            splitOuter.SplitterDistance = 160;
+            splitOuter.Panel1.Controls.Add(tvChunks);
+            splitOuter.Panel2.Controls.Add(splitInner);
 
             lblRawNote.Dock = DockStyle.Top;
             lblRawNote.AutoSize = false;
@@ -706,10 +731,8 @@ namespace TJT.UI.Controls
             lblRawNote.ForeColor = Colors.FontDisabled();
             lblRawNote.Visible = false;
 
-            pnlReadable.Controls.Add(tvChunks);
-            pnlReadable.Controls.Add(lblRawNote);
-            pnlReadable.Controls.Add(pnlStructured);
-            pnlReadable.Controls.Add(pnlHex);
+            pnlReadable.Controls.Add(splitOuter);  // Fill first
+            pnlReadable.Controls.Add(lblRawNote);  // Top note strip
 
             // ── info panel: encrypted / unsupported-note / parse-fail / empty ──
             pnlInfo.Dock = DockStyle.Fill;

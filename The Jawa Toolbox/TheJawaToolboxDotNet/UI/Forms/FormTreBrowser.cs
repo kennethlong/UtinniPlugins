@@ -29,6 +29,7 @@ using System.IO;
 using System.Linq;
 using System.Threading.Tasks;
 using System.Windows.Forms;
+using TJT.UI.Controls;
 using UtinniCore.Utinni;
 using UtinniCoreDotNet.Formats.Tre;
 using UtinniCoreDotNet.PluginFramework;
@@ -50,9 +51,11 @@ namespace TJT.UI.Forms
         // Flat path index from the shared TreArchiveIndex (review consensus #5) — the filter scans
         // this ONCE per debounced tick, never a per-tick tree re-walk.
         private IReadOnlyList<string> _allPaths;
+        private TreArchiveIndex _index;         // shared browse facade (descriptor lookup for the detail pane)
         private PathNode _root;                 // directory trie for lazy tree navigation
         private HashSet<string> _loaded;        // Game.Repository install-time snapshot overlay (null = no live client)
         private Font _boldFont;
+        private TreDetailPane _detail;          // right-region detail pane (07-03)
 
         public FormTreBrowser(IEditorPlugin editorPlugin)
         {
@@ -107,6 +110,10 @@ namespace TJT.UI.Forms
             lblLegend.ForeColor = Colors.Font();
             cbTypeFacet.SelectedIndex = 0;
 
+            // Host the detail pane in the right region (Panel2 / pnlDetail from plan 02).
+            _detail = new TreDetailPane { Dock = DockStyle.Fill };
+            pnlDetail.Controls.Add(_detail);
+
             // Kick off the disk enumeration from the ctor (matching FormObjectBrowser.LoadRepo) —
             // the heavy work runs off-thread via Task.Run and the result is applied back on the UI
             // thread through the captured SynchronizationContext (await continuation), so it does
@@ -154,6 +161,7 @@ namespace TJT.UI.Forms
         private sealed class LoadResult
         {
             public string Dir;
+            public TreArchiveIndex Index;
             public IReadOnlyList<string> AllPaths;
             public PathNode Root;
             public HashSet<string> Loaded;
@@ -191,6 +199,7 @@ namespace TJT.UI.Forms
             }
 
             _allPaths = r.AllPaths;
+            _index = r.Index;
             _root = r.Root;
             _loaded = r.Loaded;
 
@@ -218,6 +227,7 @@ namespace TJT.UI.Forms
             // calls the lower-level master-index / per-archive readers directly. The facade prefers
             // a COT2000/SearchTOC master index, else per-archive enumeration. Paths only (no payloads).
             TreArchiveIndex index = TreArchiveIndex.Build(dir);
+            r.Index = index;
             r.AllPaths = index.AllPaths;
             Log.Info("[TreBrowser] enumerated " + r.AllPaths.Count + " paths from '" + dir + "'");
             if (r.AllPaths.Count == 0)
@@ -387,12 +397,97 @@ namespace TJT.UI.Forms
 
         private void tvTre_AfterSelect(object sender, TreeViewEventArgs e)
         {
-            // Plan 03 fills pnlDetail from the selected entry's TreEntryDescriptor here. For now,
-            // surface the selected virtual path in the status label.
             PathNode pn = e.Node != null ? e.Node.Tag as PathNode : null;
-            if (pn != null && pn.IsLeaf)
+            if (pn == null || !pn.IsLeaf)
             {
-                lblStatus.Text = pn.FullPath;
+                _detail.ShowEmpty(); // directory / no leaf selected
+                return;
+            }
+
+            string path = pn.FullPath;
+            lblStatus.Text = path;
+
+            TreEntryDescriptor d;
+            if (_index == null || !_index.TryGetDescriptor(path, out d))
+            {
+                _detail.ShowParseFailure(new TreMetadata { Path = path }, "No descriptor for this entry");
+                return;
+            }
+
+            var meta = new TreMetadata
+            {
+                Path = path,
+                SizeBytes = d.Length,
+                SourceArchive = !string.IsNullOrEmpty(d.TreeFileName) ? d.TreeFileName : System.IO.Path.GetFileName(d.ResolvedArchivePath),
+                Crc = d.Crc,
+                CompressionKind = CompressorKindName(d.Compressor),
+                RootFormTag = "",
+                Version = d.Version
+            };
+            _detail.ShowDecoding(meta); // metadata shows immediately while the payload resolves
+
+            // Resolve + decode OFF the UI thread. Single pinned contract: TryResolve IS the branch
+            // (no pre-branch on EnumerateOnly + separate Resolve — review consensus #3).
+            TreEntryDescriptor descriptor = d;
+            Task.Run(() =>
+            {
+                try
+                {
+                    byte[] payload;
+                    bool ok = TrePayloadResolver.TryResolve(descriptor, out payload);
+                    if (IsHandleCreated) BeginInvoke((Action)(() => DispatchDetail(meta, ok, payload)));
+                }
+                catch (TreParseException ex)
+                {
+                    if (IsHandleCreated) BeginInvoke((Action)(() => _detail.ShowParseFailure(meta, ex.Message)));
+                }
+                catch (System.IO.IOException ex)
+                {
+                    if (IsHandleCreated) BeginInvoke((Action)(() => _detail.ShowParseFailure(meta, ex.Message)));
+                }
+            });
+        }
+
+        private void DispatchDetail(TreMetadata meta, bool resolved, byte[] payload)
+        {
+            if (!resolved)
+            {
+                // TryResolve returned false => enumerate-only (v6000). The ONLY route to encrypted
+                // (gated on the enumerate-only signal, NOT on the FORM tag — review item 12).
+                _detail.ShowEncrypted(meta);
+                return;
+            }
+
+            if (LooksLikeIff(payload))
+            {
+                if (payload.Length >= 12)
+                {
+                    meta.RootFormTag = System.Text.Encoding.ASCII.GetString(payload, 8, 4); // FORM subtype
+                }
+                _detail.ShowReadable(meta, payload);
+            }
+            else
+            {
+                // Readable but NOT an IFF FORM — show the real bytes, NOT the encrypted copy (review item 12).
+                _detail.ShowUnsupportedRaw(meta, payload);
+            }
+        }
+
+        private static bool LooksLikeIff(byte[] payload)
+        {
+            if (payload == null || payload.Length < 8) return false;
+            string tag = System.Text.Encoding.ASCII.GetString(payload, 0, 4);
+            return tag == "FORM" || tag == "LIST" || tag == "CAT ";
+        }
+
+        private static string CompressorKindName(int compressor)
+        {
+            switch (compressor)
+            {
+                case 0: return "none";
+                case 1: return "deflate";
+                case 2: return "zlib";
+                default: return "unknown";
             }
         }
 

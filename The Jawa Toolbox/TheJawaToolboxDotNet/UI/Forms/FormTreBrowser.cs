@@ -163,10 +163,12 @@ namespace TJT.UI.Forms
                 if (dir == null)
                 {
                     // First-run error state — never a silent empty tree (review item 7).
+                    Log.Info("[TreBrowser] no client .tre directory resolved (module/working/ini all lacked *.toc/*.tre)");
                     MarshalLegend("Could not locate the client .tre directory — set [TreBrowser] clientDir");
-                    MarshalStatus("");
+                    MarshalStatus("No .tre/.toc found");
                     return;
                 }
+                Log.Info("[TreBrowser] resolved client .tre directory: '" + dir + "'");
 
                 // Consume ONLY the shared TreArchiveIndex facade (D-08, criterion #4) — the UI never
                 // calls the lower-level master-index / per-archive readers directly. The facade
@@ -175,6 +177,14 @@ namespace TJT.UI.Forms
                 TreArchiveIndex index = TreArchiveIndex.Build(dir);
                 _allPaths = index.AllPaths;
                 _root = BuildTrie(_allPaths);
+                Log.Info("[TreBrowser] enumerated " + _allPaths.Count + " paths from '" + dir + "'");
+
+                if (_allPaths.Count == 0)
+                {
+                    MarshalLegend("No entries found under: " + dir);
+                    MarshalStatus("0 paths — '" + dir + "'");
+                    return;
+                }
 
                 _loaded = TryBuildLoadedOverlay();
 
@@ -196,8 +206,9 @@ namespace TJT.UI.Forms
             }
             catch (Exception ex)
             {
+                Log.Info("[TreBrowser] load failed: " + ex);
                 MarshalLegend("Failed to load archive index: " + ex.Message);
-                MarshalStatus("");
+                MarshalStatus("Load failed (see Utinni log)");
             }
         }
 
@@ -210,26 +221,54 @@ namespace TJT.UI.Forms
         /// </summary>
         private string ResolveClientTreDir()
         {
-            try
+            // (1) PRIMARY: the SWG client install root = the directory of the process Utinni is
+            // injected into (its main module). This is where SWG keeps its .tre/.toc — and is far
+            // more reliable than the process *current* directory (GetWorkingDirectory is just
+            // GetCurrentDirectory, which is frequently NOT the install root). Review item 7 /
+            // CONTEXT line 100 explicitly allows the SWG process directory when the working dir is
+            // unsuitable.
+            string moduleDir = TryGetProcessDir();
+            Log.Info("[TreBrowser] process module dir: '" + (moduleDir ?? "<null>") +
+                "' hasTre=" + (moduleDir != null && DirHasTre(moduleDir)));
+            if (moduleDir != null && DirHasTre(moduleDir))
             {
-                string wd = UtinniCore.Utility.utility.GetWorkingDirectory();
-                if (!string.IsNullOrEmpty(wd) && DirHasTre(wd))
-                {
-                    return wd;
-                }
-            }
-            catch
-            {
-                // utility binding unavailable outside a live client — fall through to the ini fallback.
+                return moduleDir;
             }
 
+            // (2) the process current directory (utility.GetWorkingDirectory()).
+            string wd = null;
+            try { wd = UtinniCore.Utility.utility.GetWorkingDirectory(); }
+            catch { /* binding unavailable outside a live client */ }
+            Log.Info("[TreBrowser] working dir: '" + (wd ?? "<null>") +
+                "' hasTre=" + (!string.IsNullOrEmpty(wd) && DirHasTre(wd)));
+            if (!string.IsNullOrEmpty(wd) && DirHasTre(wd))
+            {
+                return wd;
+            }
+
+            // (3) FALLBACK: the documented [TreBrowser] clientDir ini key.
             string configured = ini.GetString("TreBrowser", "clientDir");
+            Log.Info("[TreBrowser] ini clientDir: '" + (configured ?? "<null>") +
+                "' hasTre=" + (!string.IsNullOrEmpty(configured) && DirHasTre(configured)));
             if (!string.IsNullOrEmpty(configured) && DirHasTre(configured))
             {
                 return configured;
             }
 
             return null;
+        }
+
+        private static string TryGetProcessDir()
+        {
+            try
+            {
+                string exe = System.Diagnostics.Process.GetCurrentProcess().MainModule.FileName;
+                return Path.GetDirectoryName(exe);
+            }
+            catch
+            {
+                return null;
+            }
         }
 
         private static bool DirHasTre(string dir)

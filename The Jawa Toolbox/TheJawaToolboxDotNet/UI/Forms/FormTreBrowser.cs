@@ -110,6 +110,12 @@ namespace TJT.UI.Forms
             lblLegend.ForeColor = Colors.Font();
             cbTypeFacet.SelectedIndex = 0;
 
+            // ── UI-review polish (07 UI audit) ──
+            txtFilter.CueBanner = "Filter files…";          // #1 search affordance on the most-used control
+            cbTypeFacet.Visible = false;                     // #6 non-functional V1 stub — hide the dead control
+            ThemeListViewHeader(lvFiltered);                 // #4 theme the flat-results column-header band
+            BuildStatusLegendPanel();                        // #3 inset, divided, readable status/legend home
+
             // Host the detail pane in the right region (Panel2 / pnlDetail from plan 02).
             _detail = new TreDetailPane { Dock = DockStyle.Fill };
             pnlDetail.Controls.Add(_detail);
@@ -120,6 +126,54 @@ namespace TJT.UI.Forms
             // NOT depend on the Shown event, which does not reliably fire for forms shown inside
             // the injected SWG message loop.
             StartLoad();
+        }
+
+        // #4 (UI audit): owner-draw a ListView's column-header band so it matches the dark theme
+        // instead of the OS light chrome. Rows draw default (the control's themed back/fore colors).
+        // Static + ListView-parameterized so the detail pane reuses the same treatment.
+        internal static void ThemeListViewHeader(ListView lv)
+        {
+            lv.OwnerDraw = true;
+            lv.DrawColumnHeader += (s, e) =>
+            {
+                using (var bg = new SolidBrush(Colors.PrimaryShadow()))
+                {
+                    e.Graphics.FillRectangle(bg, e.Bounds);
+                }
+                Rectangle textRect = e.Bounds;
+                textRect.X += 4;
+                TextRenderer.DrawText(e.Graphics, e.Header.Text, e.Font ?? lv.Font, textRect, Colors.Font(),
+                    TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis);
+            };
+            lv.DrawItem += (s, e) => { e.DrawDefault = true; };
+            lv.DrawSubItem += (s, e) => { e.DrawDefault = true; };
+        }
+
+        // #3 (UI audit): the status + legend labels were two bare Dock.Bottom labels with no inset,
+        // flagged "cramped/hard to read" since 07-02. Re-home them in an inset bottom panel with a
+        // 2px divider so the load-bearing overlay legend + path/match feedback reads cleanly.
+        private void BuildStatusLegendPanel()
+        {
+            var panel1 = splitContainer.Panel1;
+            panel1.Controls.Remove(lblStatus);
+            panel1.Controls.Remove(lblLegend);
+
+            var pnlStatus = new Panel
+            {
+                Dock = DockStyle.Bottom,
+                Height = 44,
+                Padding = new Padding(3, 3, 3, 3),
+                BackColor = Colors.Primary()
+            };
+            var divider = new Panel { Dock = DockStyle.Top, Height = 2, BackColor = Colors.PrimaryShadow() };
+
+            lblStatus.Dock = DockStyle.Bottom;
+            lblLegend.Dock = DockStyle.Bottom;
+            pnlStatus.Controls.Add(lblStatus);   // bottom-most
+            pnlStatus.Controls.Add(lblLegend);   // above status
+            pnlStatus.Controls.Add(divider);     // top divider
+
+            panel1.Controls.Add(pnlStatus);
         }
 
         private void CreateSettings()

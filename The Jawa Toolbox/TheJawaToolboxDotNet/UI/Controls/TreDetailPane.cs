@@ -70,6 +70,7 @@ namespace TJT.UI.Controls
         private readonly Panel accent = new Panel();
         private readonly UtinniLabel lblBanner = new UtinniLabel();
         private readonly UtinniContextMenuStrip metaMenu = new UtinniContextMenuStrip();
+        private readonly ToolTip metaTip = new ToolTip(); // #5 (UI audit): surfaces the right-click copy affordance
 
         // Content area + state panels
         private readonly Panel pnlContent = new Panel();
@@ -447,6 +448,26 @@ namespace TJT.UI.Controls
             }
         }
 
+        // #4 (UI audit): owner-draw the column-header band so it matches the dark theme instead of
+        // the OS light chrome; rows draw default (the control's themed back/fore colours).
+        private static void ThemeListViewHeader(ListView lv)
+        {
+            lv.OwnerDraw = true;
+            lv.DrawColumnHeader += (s, e) =>
+            {
+                using (var bg = new SolidBrush(Colors.PrimaryShadow()))
+                {
+                    e.Graphics.FillRectangle(bg, e.Bounds);
+                }
+                Rectangle textRect = e.Bounds;
+                textRect.X += 4;
+                TextRenderer.DrawText(e.Graphics, e.Header.Text, e.Font ?? lv.Font, textRect, Colors.Font(),
+                    TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis);
+            };
+            lv.DrawItem += (s, e) => { e.DrawDefault = true; };
+            lv.DrawSubItem += (s, e) => { e.DrawDefault = true; };
+        }
+
         // ── rendering helpers ──
 
         private void ShowReadablePanel()
@@ -576,7 +597,9 @@ namespace TJT.UI.Controls
 
         private void BuildMetadataStrip()
         {
-            var pnlMeta = new Panel { Dock = DockStyle.Top, Height = 150, BackColor = Colors.Primary() };
+            // Height derived from content: 5 metadata rows (16px pitch, end y=84) + the accent rule
+            // + the banner (ends y=116). 120 leaves a 4px base-unit footer, not a ~30px dead band.
+            var pnlMeta = new Panel { Dock = DockStyle.Top, Height = 120, BackColor = Colors.Primary() };
 
             AddRow(pnlMeta, "Path", lblPath, 4);
             AddRow(pnlMeta, "Size", lblSize, 20);
@@ -587,15 +610,15 @@ namespace TJT.UI.Controls
             // 2px Colors.Secondary() accent rule above the banner (the reserved accent — mirrors UtinniForm).
             accent.Height = 2;
             accent.BackColor = Colors.Secondary();
-            accent.SetBounds(3, 92, 320, 2);
+            accent.SetBounds(3, 88, 320, 2);
             accent.Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right;
             pnlMeta.Controls.Add(accent);
 
             lblBanner.AutoSize = false;
-            lblBanner.SetBounds(3, 98, 380, 22);
+            lblBanner.SetBounds(3, 94, 380, 22);
             lblBanner.Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right;
             lblBanner.ForeColor = Colors.Font();
-            lblBanner.Font = new Font(Font.FontFamily, 10f, FontStyle.Bold); // banner is the only Bold use here
+            lblBanner.Font = new Font(Font, FontStyle.Bold); // 8.25pt base + Bold (SPEC); banner is the authorized Bold use, differentiated by the accent rule
             pnlMeta.Controls.Add(lblBanner);
 
             // Copy path / Copy CRC (read-only clipboard copy of displayed text — not an asset export).
@@ -606,6 +629,12 @@ namespace TJT.UI.Controls
             metaMenu.Items.Add(copyPath);
             metaMenu.Items.Add(copyCrc);
             pnlMeta.ContextMenuStrip = metaMenu;
+
+            // #5 (UI audit): the Copy path / Copy CRC actions were discoverable only by guessing a
+            // right-click. A tooltip on the metadata header + the copyable values surfaces them.
+            metaTip.SetToolTip(pnlMeta, "Right-click: Copy path / Copy CRC");
+            metaTip.SetToolTip(lblPath, "Right-click: Copy path / Copy CRC");
+            metaTip.SetToolTip(lblCrc, "Right-click: Copy path / Copy CRC");
 
             Controls.Add(pnlMeta);
         }
@@ -658,6 +687,7 @@ namespace TJT.UI.Controls
             lvStructured.BackColor = Colors.PrimaryHighlight();
             lvStructured.ForeColor = Colors.Font();
             lvStructured.BorderStyle = BorderStyle.None;
+            ThemeListViewHeader(lvStructured); // #4 (UI audit): dark column-header band, not OS light chrome
 
             lblStructuredTrunc.Dock = DockStyle.Bottom;
             lblStructuredTrunc.AutoSize = false;
@@ -746,7 +776,9 @@ namespace TJT.UI.Controls
             lblInfoHeading.Dock = DockStyle.Top;
             lblInfoHeading.AutoSize = false;
             lblInfoHeading.Height = 24;
-            lblInfoHeading.Font = new Font(Font.FontFamily, 10f, FontStyle.Bold);
+            // SPEC reserves Bold to the banner + search-match; the info heading is differentiated by
+            // colour (Color.Red on parse-fail, Colors.Font() otherwise), not weight. Base font.
+            lblInfoHeading.Font = Font;
             lblInfoHeading.ForeColor = Colors.Font();
 
             pnlInfo.Controls.Add(lblInfoBody);

@@ -64,8 +64,13 @@ namespace TJT.UI.Forms
             this.splitContainer.Orientation = System.Windows.Forms.Orientation.Vertical;
             this.splitContainer.Location = new System.Drawing.Point(0, 0);
             this.splitContainer.Name = "splitContainer";
-            this.splitContainer.SplitterDistance = 360;
+            // Size MUST be set before SplitterDistance: a fresh SplitContainer is 150px wide, and
+            // setting SplitterDistance=360 at that width throws InvalidOperationException (which,
+            // thrown from the ctor, would fail the whole plugin's MEF load). Set a wide Size first,
+            // then SplitterDistance, then the MinSizes (each kept consistent with the distance).
+            this.splitContainer.Size = new System.Drawing.Size(1100, 700);
             this.splitContainer.SplitterWidth = 4;
+            this.splitContainer.SplitterDistance = 360;
             this.splitContainer.Panel1MinSize = 240;
             this.splitContainer.Panel2MinSize = 420;
             this.splitContainer.TabIndex = 0;

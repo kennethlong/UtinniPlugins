@@ -76,10 +76,21 @@ namespace TJT.UI.Forms
 
             Width = ini.GetInt("TreBrowser", "width");
             Height = ini.GetInt("TreBrowser", "height");
-            int splitter = ini.GetInt("TreBrowser", "splitterDistance");
-            if (splitter >= splitContainer.Panel1MinSize && splitter <= Width - splitContainer.Panel2MinSize)
+            // Restore the splitter best-effort. SplitterDistance throws if it falls outside
+            // [Panel1MinSize, width - Panel2MinSize]; guard AND try/catch so a stale/invalid ini
+            // value can never bubble out of the ctor and fail the plugin's MEF load.
+            try
             {
-                splitContainer.SplitterDistance = splitter;
+                int splitter = ini.GetInt("TreBrowser", "splitterDistance");
+                if (splitter >= splitContainer.Panel1MinSize &&
+                    splitter <= splitContainer.Width - splitContainer.Panel2MinSize)
+                {
+                    splitContainer.SplitterDistance = splitter;
+                }
+            }
+            catch
+            {
+                // keep the designer default splitter distance
             }
 
             // Theme via Colors.*() accessors only — no raw ARGB color literals.

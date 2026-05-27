@@ -55,7 +55,18 @@ namespace TJT
             ini = new UtINI(Path.GetDirectoryName(Assembly.GetExecutingAssembly().Location) + "\\settings.ini");
 
             forms.Add(new FormObjectBrowser(this));
-            forms.Add(new FormTreBrowser(this));
+
+            // Isolate the TRE Browser's construction: a failure here must NOT take down the whole
+            // toolbox (a throwing form ctor would fail the plugin's MEF load and remove TJT from
+            // the menu entirely). Log and continue so the rest of the toolbox still loads.
+            try
+            {
+                forms.Add(new FormTreBrowser(this));
+            }
+            catch (Exception ex)
+            {
+                Log.Info("Failed to create FormTreBrowser; TRE Browser will be unavailable: " + ex);
+            }
 
             panels.Add(new SubPanelContainer("Controls", new SubPanel[]
             {

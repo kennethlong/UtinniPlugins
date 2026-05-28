@@ -90,6 +90,12 @@
     <Compile Include="UI\Forms\FormFourCcDialog.Designer.cs">
       <DependentUpon>FormFourCcDialog.cs</DependentUpon>
     </Compile>
+    <Compile Include="UI\Forms\FormSaveConfirmDialog.cs">
+      <SubType>Form</SubType>
+    </Compile>
+    <Compile Include="UI\Forms\FormSaveConfirmDialog.Designer.cs">
+      <DependentUpon>FormSaveConfirmDialog.cs</DependentUpon>
+    </Compile>
     <Compile Include="UI\Controls\TreDetailPane.cs">
       <SubType>UserControl</SubType>
     </Compile>

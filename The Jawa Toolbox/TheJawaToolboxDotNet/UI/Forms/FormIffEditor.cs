@@ -1249,6 +1249,20 @@ namespace TJT.UI.Forms
             {
                 // Persistence is best-effort; never block close.
             }
+
+            // Singleton form (Plugin.cs registers ONE instance at load): user-initiated close
+            // hides instead of disposing so subsequent FindOrCreateIffEditor().Show() calls
+            // from the TRE Browser "Open in IFF Editor" hand-off (and the TJT window menu)
+            // can re-Show this same instance. Default WinForms behavior disposes on close,
+            // which makes the next Show() throw ObjectDisposedException at Form.CreateHandle
+            // (observed during 08-05 live smoke when opening a second IFF after closing the
+            // first). Editor-host shutdown (CloseReason.ApplicationExitCall /
+            // TaskManagerClosing / WindowsShutDown) still falls through and disposes normally.
+            if (e.CloseReason == CloseReason.UserClosing)
+            {
+                e.Cancel = true;
+                Hide();
+            }
         }
     }
 }

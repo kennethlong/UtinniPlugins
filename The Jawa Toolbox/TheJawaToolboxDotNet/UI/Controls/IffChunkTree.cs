@@ -93,6 +93,16 @@ namespace TJT.UI.Controls
             set { tvChunks.SelectedNode = value; }
         }
 
+        /// <summary>
+        /// Root-level <see cref="TreeNode"/> collection of the inner <see cref="TreeView"/>.
+        /// Editable consumers (08-04 FormIffEditor) iterate this to decorate dirty / added nodes
+        /// per the UI-SPEC ●/＋ glyph + Colors.Secondary() accent rule. Pass-through, not a copy.
+        /// </summary>
+        public TreeNodeCollection RootNodes
+        {
+            get { return tvChunks.Nodes; }
+        }
+
         public IffChunkTree()
         {
             AutoScaleMode = AutoScaleMode.Font;

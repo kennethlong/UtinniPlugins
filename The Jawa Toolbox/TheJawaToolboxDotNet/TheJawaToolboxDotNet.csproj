@@ -139,6 +139,7 @@
     <Compile Include="UI\SubPanels\ScenePanel.Designer.cs">
       <DependentUpon>ScenePanel.cs</DependentUpon>
     </Compile>
+    <Compile Include="Saving\IffSaveTargets.cs" />
     <Compile Include="SWG\CuiImpl.cs" />
     <Compile Include="SWG\GraphicsImpl.cs" />
     <Compile Include="SWG\GroundSceneImpl.cs" />

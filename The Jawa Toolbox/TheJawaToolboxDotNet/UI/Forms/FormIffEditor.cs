@@ -851,9 +851,14 @@ namespace TJT.UI.Forms
             miSaveAs = new ToolStripMenuItem("Save As…");
             miSaveAs.Click += OnSaveAs;
             miPatchLive = new ToolStripMenuItem("Patch live client (in memory)");
-            // 08-06 wires this — current open paths do not construct ClientMemory provenance.
+            // 08-06: provenance-gated on `Source is OpenSource.ClientMemory cm` AND
+            // Game.IsRunning. No current Phase-8 open path constructs ClientMemory, so
+            // the item ships DISABLED in this phase with the honest "infra-ready"
+            // tooltip (round-2 MEDIUM 11). A follow-up phase will wire a discovery
+            // path; at that point this menu item enables on a live ClientMemory open.
             miPatchLive.Enabled = false;
-            miPatchLive.ToolTipText = "Not yet available — wired by a follow-up phase.";
+            miPatchLive.ToolTipText = "Live patch requires opening from client memory — not wired in this phase.";
+            miPatchLive.Click += OnPatchLive;
             miRepackTre = new ToolStripMenuItem("Repack into source .tre…");
             // 08-07 wires this — disabled placeholder for now.
             miRepackTre.Enabled = false;
@@ -874,8 +879,18 @@ namespace TJT.UI.Forms
             bool hasDoc = document != null;
             bool isLoose = hasDoc && Source is OpenSource.LooseFile;
             bool isTre = hasDoc && Source is OpenSource.TreArchive;
+            bool isClientMemory = hasDoc && Source is OpenSource.ClientMemory;
             bool isUnknown = hasDoc && Source is OpenSource.Unknown;
             bool inFlight = saveInFlight;
+            // 08-06: live-patch is the only mode that touches the running client.
+            // The Save▾ item is provenance-gated on ClientMemory AND Game.IsRunning
+            // (08-REVIEWS HIGH-2). No current Phase-8 open path constructs ClientMemory
+            // (round-2 MEDIUM 11), so this branch is reachable only via a follow-up
+            // discovery path or a maintainer-only debug construction during Tier-4
+            // verification.
+            bool clientUp = false;
+            try { clientUp = Game.IsRunning; }
+            catch { clientUp = false; /* binding unavailable outside an injected client */ }
 
             // Reload tooltip copy per round-2 MEDIUM 5: on Unknown the four provenance-gated
             // modes show the documented "Cannot resolve archive record" message.
@@ -903,9 +918,26 @@ namespace TJT.UI.Forms
             }
             if (miPatchLive != null)
             {
-                miPatchLive.ToolTipText = isUnknown
-                    ? unknownTooltip
-                    : "Not yet available — wired by a follow-up phase.";
+                // 08-06: enable iff Source is ClientMemory AND a live client is up
+                // AND no save is in flight. Otherwise disabled with the honest
+                // future-phase tooltip (round-2 MEDIUM 11).
+                miPatchLive.Enabled = isClientMemory && clientUp && !inFlight;
+                if (isUnknown)
+                {
+                    miPatchLive.ToolTipText = unknownTooltip;
+                }
+                else if (isClientMemory && !clientUp)
+                {
+                    miPatchLive.ToolTipText = "No live client — start SWG to patch the running client.";
+                }
+                else if (isClientMemory)
+                {
+                    miPatchLive.ToolTipText = "Patch the running client's mapped IFF region (same-length only).";
+                }
+                else
+                {
+                    miPatchLive.ToolTipText = "Live patch requires opening from client memory — not wired in this phase.";
+                }
             }
             if (miRepackTre != null)
             {
@@ -982,6 +1014,97 @@ namespace TJT.UI.Forms
                 {
                     IffSaveTargets.RecordSaveAsDirectory(ini, path);
                 }
+            }
+        }
+
+        // ── Patch live client (08-06 / D-05.3) ──────────────────────────────
+        //
+        // Provenance-gated on `Source is OpenSource.ClientMemory cm` AND Game.IsRunning
+        // (08-REVIEWS HIGH-2). Shows FormSaveConfirmDialog with the UI-SPEC §Destructive
+        // heading/body/verbs; on Accept, serializes via IffWriter.Write and queues the
+        // game-thread CON-N-04 write via LivePatchSaveTarget.Apply. The patch is
+        // VOLATILE by design (lost on reload / scene change) — the candid copy in the
+        // confirm body states this.
+        //
+        // The patch is NOT a file save — it does NOT clear the dirty marker and does
+        // NOT update lastSavedPath (the Reload button is for file-based saves).
+        private void OnPatchLive(object sender, EventArgs e)
+        {
+            if (document == null) return;
+            var cm = Source as OpenSource.ClientMemory;
+            if (cm == null)
+            {
+                // Defensive — the menu item should not have been enabled. Surface the
+                // honest tooltip wording as the status copy and stop.
+                lblStatus.Text = "Live patch requires opening from client memory — not wired in this phase.";
+                lblStatus.ForeColor = Color.Red;
+                return;
+            }
+
+            // UI-SPEC §Destructive — heading, body, explicit verb captions. Body
+            // emphasis renders in Color.Red inside the dialog (the documented
+            // destructive exception); the confirm dialog enforces that.
+            const string heading = "Patch the live client in memory?";
+            const string body = "This writes your edits straight into the running client. " +
+                                "The change is temporary (lost on reload) and can destabilize " +
+                                "the session. Continue?";
+
+            using (var dlg = new FormSaveConfirmDialog(
+                heading: heading,
+                body: body,
+                acceptVerb: "Patch live",
+                cancelVerb: "Cancel",
+                showBackupCheckbox: false))
+            {
+                dlg.ShowDialog(this);
+                if (dlg.Outcome != FormSaveConfirmDialog.ConfirmOutcome.Accepted) return;
+            }
+
+            // Serialize the document. IffWriter.Write throws on over-cap chunks (08-01
+            // 64 MB cap) — surface as a save-time validation, not a crash.
+            byte[] rewritten;
+            try
+            {
+                rewritten = IffWriter.Write(document);
+            }
+            catch (Exception ex)
+            {
+                lblStatus.Text = "Live patch failed (serialize): " + ex.Message + " Your edits are kept in the editor.";
+                lblStatus.ForeColor = Color.Red;
+                return;
+            }
+
+            // Queue the CON-N-04 write through the framework-side LivePatchValidator
+            // bounds gate. LivePatchSaveTarget never touches the UI thread; the write
+            // is queued via GameCallbacks.AddMainLoopCall.
+            LivePatchSaveTarget.LivePatchResult result =
+                LivePatchSaveTarget.Apply(cm, rewritten);
+
+            switch (result)
+            {
+                case LivePatchSaveTarget.LivePatchResult.Applied:
+                    // Volatile — does NOT clear the dirty marker (live patch is not a
+                    // file save). The candid status mirrors UI-SPEC §States Reloading
+                    // wording for the live-patch path.
+                    lblStatus.Text = "Saving (live patch)… Applied.";
+                    lblStatus.ForeColor = Colors.Font();
+                    break;
+                case LivePatchSaveTarget.LivePatchResult.RefusedSameLength:
+                    lblStatus.Text =
+                        "Live patch requires the rewritten IFF to be the same length as the original. Save to file/repack instead.";
+                    lblStatus.ForeColor = Color.Red;
+                    break;
+                case LivePatchSaveTarget.LivePatchResult.RefusedZeroTarget:
+                    lblStatus.Text = "Live patch target address is invalid. Save to file/repack instead.";
+                    lblStatus.ForeColor = Color.Red;
+                    break;
+                case LivePatchSaveTarget.LivePatchResult.RefusedNoClient:
+                default:
+                    // Defensive: the menu item should not have been clickable when
+                    // Game.IsRunning is false. The honest copy.
+                    lblStatus.Text = "No live client.";
+                    lblStatus.ForeColor = Color.Red;
+                    break;
             }
         }
 

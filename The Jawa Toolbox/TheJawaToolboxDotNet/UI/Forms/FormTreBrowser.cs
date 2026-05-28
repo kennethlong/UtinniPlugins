@@ -814,6 +814,19 @@ namespace TJT.UI.Forms
             {
                 // Persistence is best-effort; never block close.
             }
+
+            // Singleton form (Plugin.cs registers ONE instance at load): user-initiated close
+            // hides instead of disposing so the TJT window menu can re-Show this same instance.
+            // Same latent bug class as FormIffEditor (08-05 smoke defect) — fixed defensively
+            // here so closing then re-opening the TRE Browser via the host's window menu does
+            // not throw ObjectDisposedException at Form.CreateHandle. Editor-host shutdown
+            // (CloseReason.ApplicationExitCall / TaskManagerClosing / WindowsShutDown) still
+            // falls through and disposes normally.
+            if (e.CloseReason == CloseReason.UserClosing)
+            {
+                e.Cancel = true;
+                Hide();
+            }
         }
 
         // ── helpers ─────────────────────────────────────────────────────────

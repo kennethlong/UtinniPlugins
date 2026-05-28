@@ -33,6 +33,7 @@ using TJT.UI.Controls;
 using UtinniCore.Utinni;
 using UtinniCoreDotNet.Formats.Tre;
 using UtinniCoreDotNet.PluginFramework;
+using UtinniCoreDotNet.UI.Controls;
 using UtinniCoreDotNet.UI.Forms;
 using UtinniCoreDotNet.UI.Theme;
 using UtinniCoreDotNet.Utility;
@@ -56,6 +57,8 @@ namespace TJT.UI.Forms
         private HashSet<string> _loaded;        // Game.Repository install-time snapshot overlay (null = no live client)
         private Font _boldFont;
         private TreDetailPane _detail;          // right-region detail pane (07-03)
+        private UtinniContextMenuStrip _tvTreContextMenu;  // 08-05 Task 4 — Open in IFF Editor
+        private ToolStripMenuItem _miOpenInIffEditor;       // 08-05 Task 4
 
         public FormTreBrowser(IEditorPlugin editorPlugin)
         {
@@ -120,12 +123,128 @@ namespace TJT.UI.Forms
             _detail = new TreDetailPane { Dock = DockStyle.Fill };
             pnlDetail.Controls.Add(_detail);
 
+            // 08-05 Task 4: "Open in IFF Editor" context-menu on tree leaves. Browser stays
+            // read-only — we only ADD a hand-off entry; existing read-only behavior unchanged.
+            BuildTvTreContextMenu();
+
             // Kick off the disk enumeration from the ctor (matching FormObjectBrowser.LoadRepo) —
             // the heavy work runs off-thread via Task.Run and the result is applied back on the UI
             // thread through the captured SynchronizationContext (await continuation), so it does
             // NOT depend on the Shown event, which does not reliably fire for forms shown inside
             // the injected SWG message loop.
             StartLoad();
+        }
+
+        // 08-05 Task 4 — TRE Browser hand-off to the IFF Editor. Right-clicking a resolved IFF
+        // leaf surfaces "Open in IFF Editor"; selecting it resolves the payload + descriptor
+        // off-UI-thread and hands the bytes + provenance to FormIffEditor.OpenFromTreEntry.
+        private void BuildTvTreContextMenu()
+        {
+            _tvTreContextMenu = new UtinniContextMenuStrip();
+            _miOpenInIffEditor = new ToolStripMenuItem("Open in IFF Editor");
+            _miOpenInIffEditor.Click += OnOpenInIffEditor;
+            _tvTreContextMenu.Items.Add(_miOpenInIffEditor);
+            _tvTreContextMenu.Opening += OnTvTreContextMenuOpening;
+            tvTre.ContextMenuStrip = _tvTreContextMenu;
+            // Right-click should select the underlying node so the menu's logic targets it.
+            tvTre.NodeMouseClick += OnTvTreNodeMouseClick;
+        }
+
+        private void OnTvTreNodeMouseClick(object sender, TreeNodeMouseClickEventArgs e)
+        {
+            if (e.Button == MouseButtons.Right)
+            {
+                tvTre.SelectedNode = e.Node;
+            }
+        }
+
+        private void OnTvTreContextMenuOpening(object sender, System.ComponentModel.CancelEventArgs e)
+        {
+            // Only show the menu when a resolvable leaf is selected.
+            PathNode pn = tvTre.SelectedNode != null ? tvTre.SelectedNode.Tag as PathNode : null;
+            if (pn == null || !pn.IsLeaf)
+            {
+                e.Cancel = true;
+                return;
+            }
+            TreEntryDescriptor d;
+            if (_index == null || !_index.TryGetDescriptor(pn.FullPath, out d))
+            {
+                e.Cancel = true;
+                return;
+            }
+            // Defensive: do NOT offer Open-in-IFF-Editor on enumerate-only (V5000/V6000)
+            // descriptors — the payload can't be resolved (07-04a — encrypted), so the editor
+            // can't open it.
+            _miOpenInIffEditor.Enabled = !d.EnumerateOnly;
+            _miOpenInIffEditor.ToolTipText = d.EnumerateOnly
+                ? "Payload is enumerate-only — cannot open in IFF Editor."
+                : "Opens this entry in the IFF Editor with TRE provenance.";
+        }
+
+        private void OnOpenInIffEditor(object sender, EventArgs e)
+        {
+            PathNode pn = tvTre.SelectedNode != null ? tvTre.SelectedNode.Tag as PathNode : null;
+            if (pn == null || !pn.IsLeaf) return;
+            TreEntryDescriptor d;
+            if (_index == null || !_index.TryGetDescriptor(pn.FullPath, out d)) return;
+            // Resolve the payload OFF the UI thread (same pattern as DispatchDetail).
+            TreEntryDescriptor descriptor = d;
+            string logicalPath = pn.FullPath;
+            Task.Run(() =>
+            {
+                try
+                {
+                    byte[] payload;
+                    bool ok = TrePayloadResolver.TryResolve(descriptor, out payload);
+                    if (!IsHandleCreated) return;
+                    BeginInvoke((Action)(() =>
+                    {
+                        if (!ok)
+                        {
+                            lblStatus.Text = "Cannot open " + logicalPath + " — payload is enumerate-only.";
+                            return;
+                        }
+                        FormIffEditor editor = FindOrCreateIffEditor();
+                        if (editor == null)
+                        {
+                            lblStatus.Text = "IFF Editor is unavailable in this session.";
+                            return;
+                        }
+                        editor.OpenFromTreEntry(
+                            payload,
+                            descriptor.ResolvedArchivePath,
+                            logicalPath,
+                            descriptor.ArchiveLocalOffset);
+                        editor.Show();
+                        editor.Activate();
+                    }));
+                }
+                catch (Exception ex)
+                {
+                    if (IsHandleCreated)
+                    {
+                        BeginInvoke((Action)(() =>
+                        {
+                            lblStatus.Text = "Open-in-IFF-Editor failed: " + ex.Message;
+                            lblStatus.ForeColor = Color.Red;
+                        }));
+                    }
+                }
+            });
+        }
+
+        // Find the FormIffEditor instance the plugin registered in GetForms() and return it.
+        // Returns null if the editor failed to load (Plugin.cs registration sits inside a
+        // try/catch — if FormIffEditor's ctor threw, it isn't in the forms list).
+        private FormIffEditor FindOrCreateIffEditor()
+        {
+            foreach (IEditorForm f in editorPlugin.GetForms())
+            {
+                FormIffEditor editor = f as FormIffEditor;
+                if (editor != null) return editor;
+            }
+            return null;
         }
 
         // #4 (UI audit): owner-draw a ListView's column-header band so it matches the dark theme

@@ -68,6 +68,19 @@ namespace TJT
                 Log.Info("Failed to create FormTreBrowser; TRE Browser will be unavailable: " + ex);
             }
 
+            // 08-05 Task 4: register the editable IFF Editor in the same try/catch isolation
+            // block. GetSubPanels() stays null — the MEF SPI is NOT widened (CON-M-01/02,
+            // STAB-04). The TRE Browser's "Open in IFF Editor" hand-off finds this form by
+            // type in the existing forms list.
+            try
+            {
+                forms.Add(new FormIffEditor(this));
+            }
+            catch (Exception ex)
+            {
+                Log.Info("Failed to create FormIffEditor; IFF Editor will be unavailable: " + ex);
+            }
+
             panels.Add(new SubPanelContainer("Controls", new SubPanel[]
             {
                 new ScenePanel(this, hotkeyManager, ini),

@@ -27,12 +27,16 @@ using System.Collections.Generic;
 using System.Drawing;
 using System.IO;
 using System.Text;
+using System.Threading.Tasks;
 using System.Windows.Forms;
+using TJT.Saving;
 using TJT.UI.Controls;
 using UtinniCore.Utinni;
 using UtinniCoreDotNet.Editing;
 using UtinniCoreDotNet.Formats.Iff;
+using UtinniCoreDotNet.Formats.Tre;
 using UtinniCoreDotNet.PluginFramework;
+using UtinniCoreDotNet.Saving;
 using UtinniCoreDotNet.UI.Controls;
 using UtinniCoreDotNet.UI.Forms;
 using UtinniCoreDotNet.UI.Theme;
@@ -77,6 +81,36 @@ namespace TJT.UI.Forms
         private MutableIffNode currentLeaf;
         // Tracks which pane (hex vs text) is visible for the current leaf.
         private bool textModeActive;
+
+        // Friendly display name for the loaded document (used in the Saved <name> (<mode>) status
+        // copy + the editor window title). Set on open; cleared on close-document.
+        private string displayName;
+
+        // Save menu items — kept as fields so RefreshSaveMenuEnabledState can flip Enabled +
+        // Tooltip based on the current Source pattern-match. Lives in BuildSaveMenu.
+        private UtinniContextMenuStrip saveMenu;
+        private ToolStripMenuItem miSaveInPlace;
+        private ToolStripMenuItem miSaveLooseOverride;
+        private ToolStripMenuItem miSaveAs;
+        private ToolStripMenuItem miPatchLive;
+        private ToolStripMenuItem miRepackTre;
+
+        // True while a save Task is in flight — drives Reload-button-disabled-while-in-flight
+        // (08-REVIEWS MEDIUM-9 stale-bytes reload race barrier).
+        private bool saveInFlight;
+
+        // Inferred root TypeId of the currently loaded document (used to drive
+        // ReloadAssetClassifier sub-detection on .iff carriers). Refreshed at LoadDocument time.
+        private string rootTypeId;
+
+        // The last successfully-saved file path (used to feed ClientReloadDispatcher with the
+        // right extension at Reload-button-click time).
+        private string lastSavedPath;
+
+        // Lazy ToolTip provider for runtime tooltips on UtinniButtons (the WinForms ToolTip
+        // component attaches by SetToolTip on any control; UtinniButton itself doesn't expose
+        // a ToolTipText property).
+        private readonly ToolTip toolTip = new ToolTip();
 
         public FormIffEditor(IEditorPlugin editorPlugin)
         {
@@ -155,21 +189,46 @@ namespace TJT.UI.Forms
             BuildLeafContextMenu();
             // Tree structural-op context menu (D-03) — 8 ops.
             BuildTreeContextMenu();
+            // Save▾ drop-down (D-05 / 08-05 Task 4) — five save items, Source-gated.
+            BuildSaveMenu();
+            // Wire the open / save-dropdown / reload handlers (08-05 Task 4).
+            btnOpen.Click += OnOpenClicked;
+            btnSave.Click += OnSaveButtonClick;
+            btnReload.Click += OnReloadClicked;
 
             SetTitle(null);
+            RefreshSaveMenuEnabledState();
+            RefreshReloadButtonState();
         }
 
         /// <summary>Used by tests / callers to attach a pre-built MutableIffDocument.</summary>
         public void LoadDocument(MutableIffDocument doc)
         {
+            LoadDocument(doc, OpenSource.Unknown.Instance, null);
+        }
+
+        /// <summary>
+        /// Full-provenance overload used by the 08-05 open paths (Open… loose / TRE Browser
+        /// hand-off). Sets <see cref="Source"/> + <paramref name="displayName"/>, captures the
+        /// root IFF TypeId for the ReloadAssetClassifier sub-detect path, and refreshes the
+        /// Save▾ enabled state so menu items immediately reflect the new provenance.
+        /// </summary>
+        public void LoadDocument(MutableIffDocument doc, OpenSource source, string displayName)
+        {
             if (doc == null) throw new ArgumentNullException("doc");
             this.document = doc;
             this.controller = new IffEditController(doc);
             this.controller.EditApplied += OnEditApplied;
+            this.Source = source ?? OpenSource.Unknown.Instance;
+            this.displayName = displayName;
+            this.rootTypeId = doc.Root != null ? doc.Root.TypeId : null;
+            this.lastSavedPath = null;
             iffChunkTree.LoadMutable(doc);
             btnSave.Enabled = true;
             UpdateUndoRedoState();
             UpdateDirtyVisuals();
+            RefreshSaveMenuEnabledState();
+            RefreshReloadButtonState();
         }
 
         private void CreateSettings()
@@ -223,10 +282,18 @@ namespace TJT.UI.Forms
             }
             if (keyData == (Keys.Control | Keys.S))
             {
-                // Save▾ default action — the topmost-non-disabled Save mode. 08-05/08-06 wires
-                // the actual save modes; for now this is a placeholder that flashes the status
-                // strip so users see the shortcut was registered.
-                lblStatus.Text = "Save target not configured — 08-05 wires this.";
+                // Ctrl+S — default Save action: Save in place when source is LooseFile;
+                // otherwise Save As… (the only enabled mode on Unknown/TreArchive without a
+                // logical-path resolved override target).
+                if (document == null) return true;
+                if (Source is OpenSource.LooseFile)
+                {
+                    OnSaveInPlace(this, EventArgs.Empty);
+                }
+                else
+                {
+                    OnSaveAs(this, EventArgs.Empty);
+                }
                 return true;
             }
             return base.ProcessCmdKey(ref msg, keyData);
@@ -763,6 +830,406 @@ namespace TJT.UI.Forms
                 sb.Append('|').Append(Environment.NewLine);
             }
             return sb.ToString();
+        }
+
+        // ─────────────────────────────────────────────────────────────────────
+        // 08-05 Task 4: Save▾ drop-down + Open… + Reload-in-client + provenance
+        // gating (W-3 / round-2 MEDIUM 5) + TRE Browser hand-off
+        // ─────────────────────────────────────────────────────────────────────
+
+        // The five Save▾ items per UI-SPEC §Save-target chooser. Round-2 MEDIUM 5: when Source
+        // is OpenSource.Unknown, Save (in place), Save as loose override, Patch live client,
+        // and Repack into source .tre ALL stay disabled; ONLY Save As… remains enabled (it
+        // doesn't pattern-match a populated case — the user picks the path).
+        private void BuildSaveMenu()
+        {
+            saveMenu = new UtinniContextMenuStrip();
+            miSaveInPlace = new ToolStripMenuItem("Save (in place)");
+            miSaveInPlace.Click += OnSaveInPlace;
+            miSaveLooseOverride = new ToolStripMenuItem("Save as loose override");
+            miSaveLooseOverride.Click += OnSaveLooseOverride;
+            miSaveAs = new ToolStripMenuItem("Save As…");
+            miSaveAs.Click += OnSaveAs;
+            miPatchLive = new ToolStripMenuItem("Patch live client (in memory)");
+            // 08-06 wires this — current open paths do not construct ClientMemory provenance.
+            miPatchLive.Enabled = false;
+            miPatchLive.ToolTipText = "Not yet available — wired by a follow-up phase.";
+            miRepackTre = new ToolStripMenuItem("Repack into source .tre…");
+            // 08-07 wires this — disabled placeholder for now.
+            miRepackTre.Enabled = false;
+            miRepackTre.ToolTipText = "Not yet available — wired by a follow-up phase.";
+            saveMenu.Items.AddRange(new ToolStripItem[]
+            {
+                miSaveInPlace, miSaveLooseOverride, miSaveAs,
+                new ToolStripSeparator(),
+                miPatchLive, miRepackTre,
+            });
+        }
+
+        // Pattern-match the current Source against the four sealed cases and gate each Save
+        // mode accordingly. Round-2 MEDIUM 5: Save As… is ALWAYS enabled when a document is
+        // loaded (incl. on OpenSource.Unknown) — it's the user's explicit escape hatch.
+        private void RefreshSaveMenuEnabledState()
+        {
+            bool hasDoc = document != null;
+            bool isLoose = hasDoc && Source is OpenSource.LooseFile;
+            bool isTre = hasDoc && Source is OpenSource.TreArchive;
+            bool isUnknown = hasDoc && Source is OpenSource.Unknown;
+            bool inFlight = saveInFlight;
+
+            // Reload tooltip copy per round-2 MEDIUM 5: on Unknown the four provenance-gated
+            // modes show the documented "Cannot resolve archive record" message.
+            const string unknownTooltip = "Cannot resolve archive record — use Save As to write to a chosen file.";
+
+            if (miSaveInPlace != null)
+            {
+                miSaveInPlace.Enabled = isLoose && !inFlight;
+                miSaveInPlace.ToolTipText = isUnknown
+                    ? unknownTooltip
+                    : (isLoose ? "" : "Open from a loose .iff to save in place.");
+            }
+            if (miSaveLooseOverride != null)
+            {
+                miSaveLooseOverride.Enabled = (isLoose || isTre) && !inFlight;
+                miSaveLooseOverride.ToolTipText = isUnknown
+                    ? unknownTooltip
+                    : (isLoose || isTre ? "" : "Available when the document has a logical path.");
+            }
+            if (miSaveAs != null)
+            {
+                miSaveAs.Enabled = hasDoc && !inFlight;
+                // Save As is ALWAYS available on a loaded document (round-2 MEDIUM 5).
+                miSaveAs.ToolTipText = "Save the current edits to a path you choose.";
+            }
+            if (miPatchLive != null)
+            {
+                miPatchLive.ToolTipText = isUnknown
+                    ? unknownTooltip
+                    : "Not yet available — wired by a follow-up phase.";
+            }
+            if (miRepackTre != null)
+            {
+                miRepackTre.ToolTipText = isUnknown
+                    ? unknownTooltip
+                    : "Not yet available — wired by a follow-up phase.";
+            }
+            btnSave.Enabled = hasDoc;
+        }
+
+        // ── Save▾ drop-down trigger ─────────────────────────────────────────
+
+        private void OnSaveButtonClick(object sender, EventArgs e)
+        {
+            if (document == null || saveMenu == null) return;
+            // Anchor the drop-down at the bottom of the Save button.
+            saveMenu.Show(btnSave, new Point(0, btnSave.Height));
+        }
+
+        // ── Save handlers ───────────────────────────────────────────────────
+
+        private async void OnSaveInPlace(object sender, EventArgs e)
+        {
+            if (document == null) return;
+            var loose = Source as OpenSource.LooseFile;
+            if (loose == null)
+            {
+                lblStatus.Text = "Cannot resolve archive record — use Save As to write to a chosen file.";
+                lblStatus.ForeColor = Color.Red;
+                return;
+            }
+            await DoFileSaveAsync(() => IffSaveTargets.SaveInPlace(document, Source), "in place");
+        }
+
+        private async void OnSaveLooseOverride(object sender, EventArgs e)
+        {
+            if (document == null) return;
+            string resolvedRoot = ResolveClientRoot();
+            if (string.IsNullOrEmpty(resolvedRoot))
+            {
+                lblStatus.Text =
+                    "Could not locate the client root — use Save As… and we'll remember the directory.";
+                lblStatus.ForeColor = Color.Red;
+                return;
+            }
+            string subDir = ini.GetString("IffEditor", "looseOverrideDir");
+            // Planner's best-guess default subdir when none is recorded yet (round-2 MEDIUM 10).
+            // Tier-4 smoke (Task 5) confirms or overrides this; the Save As… fallback path
+            // (OnSaveAs below) persists the user-chosen directory back into the ini key.
+            if (string.IsNullOrEmpty(subDir)) subDir = "loose";
+            await DoFileSaveAsync(
+                () => IffSaveTargets.SaveLooseOverride(document, Source, resolvedRoot, subDir),
+                "loose override");
+        }
+
+        private async void OnSaveAs(object sender, EventArgs e)
+        {
+            if (document == null) return;
+            using (var sfd = new SaveFileDialog())
+            {
+                sfd.Title = "Save IFF as…";
+                sfd.Filter = "IFF files (*.iff)|*.iff|All files (*.*)|*.*";
+                sfd.FileName = !string.IsNullOrEmpty(displayName) ? displayName : "untitled.iff";
+                if (sfd.ShowDialog(this) != DialogResult.OK) return;
+                string path = sfd.FileName;
+                bool ok = await DoFileSaveAsync(
+                    () => IffSaveTargets.SaveToPath(document, path),
+                    "save-as");
+                // Round-2 MEDIUM 10: persist the user-chosen directory back to
+                // [IffEditor] looseOverrideDir so the NEXT loose-override save defaults
+                // to the user's preferred location (when the planner's-best-guess subdir
+                // didn't match the live client).
+                if (ok)
+                {
+                    IffSaveTargets.RecordSaveAsDirectory(ini, path);
+                }
+            }
+        }
+
+        // Shared file-save orchestration: lock the toolbar Reload button while the save Task is
+        // in flight (08-REVIEWS MEDIUM-9 stale-bytes reload race), surface the Saving/Saved/
+        // Save-failed status copy per UI-SPEC, refresh the dirty / undo-redo visuals.
+        private async Task<bool> DoFileSaveAsync(
+            Func<Task<IffSaveTargets.SaveResult>> saveOp,
+            string modeLabel)
+        {
+            saveInFlight = true;
+            RefreshSaveMenuEnabledState();
+            RefreshReloadButtonState();
+            lblStatus.Text = "Saving (" + modeLabel + ")…";
+            lblStatus.ForeColor = Colors.Font();
+
+            IffSaveTargets.SaveResult result;
+            try
+            {
+                result = await saveOp().ConfigureAwait(true);
+            }
+            catch (Exception ex)
+            {
+                result = IffSaveTargets.SaveResult.Failure(ex.Message);
+            }
+
+            saveInFlight = false;
+
+            if (result.Ok)
+            {
+                lblStatus.Text = "Saved " + (displayName ?? Path.GetFileName(result.Path) ?? "<untitled>") + " (" + modeLabel + ")";
+                lblStatus.ForeColor = Colors.Font();
+                lastSavedPath = result.Path;
+                // The hybrid DOM keeps the verbatim source bytes for unedited subtrees, but the
+                // canonical "saved baseline" semantics live in the controller. We do NOT clear
+                // controller.IsDirty here — the SUMMARY documents that the controller's
+                // baseline-clean dirty model is the source of truth, and the file save is an
+                // orthogonal action. The UI nevertheless clears the lblDirty banner so a fresh
+                // baseline can be re-established by an explicit Reload-from-disk if the user
+                // chooses. See round-2 follow-up for the dirty-after-save audit (DEFERRED).
+            }
+            else
+            {
+                lblStatus.Text = (result.Message ?? "Save failed.") + " Your edits are kept in the editor — try another save target.";
+                lblStatus.ForeColor = Color.Red;
+            }
+            RefreshSaveMenuEnabledState();
+            RefreshReloadButtonState();
+            return result.Ok;
+        }
+
+        // ── Open… ───────────────────────────────────────────────────────────
+
+        private void OnOpenClicked(object sender, EventArgs e)
+        {
+            using (var ofd = new OpenFileDialog())
+            {
+                ofd.Title = "Open IFF…";
+                ofd.Filter = "IFF files (*.iff)|*.iff|All files (*.*)|*.*";
+                if (ofd.ShowDialog(this) != DialogResult.OK) return;
+                OpenFromLooseFile(ofd.FileName);
+            }
+        }
+
+        private void OpenFromLooseFile(string path)
+        {
+            try
+            {
+                byte[] bytes = File.ReadAllBytes(path);
+                IffDocument doc;
+                using (var ms = new MemoryStream(bytes, writable: false))
+                {
+                    doc = IffReader.Read(ms);
+                }
+                MutableIffDocument mut = MutableIffDocument.FromDocument(doc, bytes);
+                LoadDocument(mut, new OpenSource.LooseFile(path), Path.GetFileName(path));
+                lblStatus.Text = "Opened " + Path.GetFileName(path);
+                lblStatus.ForeColor = Colors.Font();
+            }
+            catch (Exception ex)
+            {
+                lblStatus.Text = "Open failed: " + ex.Message;
+                lblStatus.ForeColor = Color.Red;
+            }
+        }
+
+        // ── TRE Browser hand-off (08-05 Task 4 — populates OpenSource.TreArchive) ──
+
+        /// <summary>
+        /// Entry point invoked by <c>FormTreBrowser</c>'s "Open in IFF Editor" context-menu
+        /// item. Constructs the appropriate <see cref="OpenSource"/> from the descriptor
+        /// fields (TreArchive on a resolved record-index, Unknown on degraded fallback per
+        /// checker W-3) and binds the document into the editor.
+        /// </summary>
+        /// <param name="payload">Resolved payload bytes (from FormTreBrowser's DispatchDetail).</param>
+        /// <param name="resolvedArchivePath">The physical .tre path
+        /// (<c>TreEntryDescriptor.ResolvedArchivePath</c>).</param>
+        /// <param name="logicalPath">The entry's logical path inside the archive
+        /// (<c>TreEntryDescriptor.Path</c>).</param>
+        /// <param name="archiveLocalOffset">The payload offset inside the .tre
+        /// (<c>TreEntryDescriptor.ArchiveLocalOffset</c>).</param>
+        public void OpenFromTreEntry(
+            byte[] payload,
+            string resolvedArchivePath,
+            string logicalPath,
+            long archiveLocalOffset)
+        {
+            if (payload == null)
+            {
+                lblStatus.Text = "TRE entry has no payload to open.";
+                lblStatus.ForeColor = Color.Red;
+                return;
+            }
+            try
+            {
+                IffDocument doc;
+                using (var ms = new MemoryStream(payload, writable: false))
+                {
+                    doc = IffReader.Read(ms);
+                }
+                MutableIffDocument mut = MutableIffDocument.FromDocument(doc, payload);
+                // Resolve recordIndex via the framework-side helper. On success → TreArchive;
+                // on failure → Unknown.Instance (checker W-3 — Save-In-Place + Repack stay
+                // disabled; Save As remains as the user's escape hatch per round-2 MEDIUM 5).
+                OpenSource src = TreRecordIndexResolver.ResolveOrUnknown(
+                    resolvedArchivePath, archiveLocalOffset, logicalPath);
+                string name = logicalPath ?? Path.GetFileName(resolvedArchivePath ?? "");
+                LoadDocument(mut, src, name);
+                // Surface the source kind so the user sees the provenance the editor inferred.
+                if (src is OpenSource.TreArchive)
+                {
+                    lblStatus.Text = "Opened " + name + " from " + Path.GetFileName(resolvedArchivePath ?? "");
+                    lblStatus.ForeColor = Colors.Font();
+                }
+                else
+                {
+                    lblStatus.Text = "Opened " + name + " — record index unresolved; use Save As to write to a chosen file.";
+                    lblStatus.ForeColor = Colors.Font();
+                }
+            }
+            catch (Exception ex)
+            {
+                lblStatus.Text = "TRE hand-off failed: " + ex.Message;
+                lblStatus.ForeColor = Color.Red;
+            }
+        }
+
+        // ── Reload-in-client ────────────────────────────────────────────────
+
+        private void OnReloadClicked(object sender, EventArgs e)
+        {
+            if (string.IsNullOrEmpty(lastSavedPath))
+            {
+                lblStatus.Text = "Save first — Reload uses the last-saved path to classify the asset.";
+                lblStatus.ForeColor = Color.Red;
+                return;
+            }
+            ReloadTier tier = ClientReloadDispatcher.Dispatch(lastSavedPath, rootTypeId);
+            switch (tier)
+            {
+                case ReloadTier.ReloadedTextures:
+                    lblStatus.Text = "Reloaded (textures)";
+                    lblStatus.ForeColor = Colors.Font();
+                    break;
+                case ReloadTier.ReloadedTerrain:
+                    lblStatus.Text = "Reloaded (terrain)";
+                    lblStatus.ForeColor = Colors.Font();
+                    break;
+                case ReloadTier.PendingNextSceneChange:
+                    lblStatus.Text = "Reloads on next scene change";
+                    lblStatus.ForeColor = Colors.Font();
+                    toolTip.SetToolTip(btnReload,
+                        "Reloads on next scene change. Datatables, string tables, and object templates can't be hot-swapped — the running scene caches them.");
+                    break;
+                case ReloadTier.Unavailable:
+                default:
+                    lblStatus.Text = "No live client — start SWG to reload edits in-session.";
+                    lblStatus.ForeColor = Color.Red;
+                    break;
+            }
+        }
+
+        private void RefreshReloadButtonState()
+        {
+            // Disabled while a save Task is in flight (MEDIUM-9). Otherwise enabled iff we
+            // have a last-saved path AND a live client.
+            bool clientUp = false;
+            try { clientUp = Game.IsRunning; }
+            catch { clientUp = false; }
+            bool enable = !saveInFlight && !string.IsNullOrEmpty(lastSavedPath) && clientUp;
+            btnReload.Enabled = enable;
+            if (!clientUp)
+            {
+                toolTip.SetToolTip(btnReload, "No live client — start SWG to reload edits in-session.");
+            }
+            else if (saveInFlight)
+            {
+                toolTip.SetToolTip(btnReload, "Disabled while save is in progress.");
+            }
+            else if (string.IsNullOrEmpty(lastSavedPath))
+            {
+                toolTip.SetToolTip(btnReload, "Save the document first to enable Reload.");
+            }
+            else
+            {
+                toolTip.SetToolTip(btnReload, "");
+            }
+        }
+
+        // Resolves the client install root the same way FormTreBrowser does (process-module
+        // primary, then GetWorkingDirectory(), then the [IffEditor] / [TreBrowser] ini fallback).
+        // Kept private to FormIffEditor to avoid coupling to FormTreBrowser internals; the
+        // small duplication is acceptable per round-2 MEDIUM 10's "best-guess default subdir"
+        // disposition.
+        private string ResolveClientRoot()
+        {
+            // (1) Process module directory.
+            try
+            {
+                string exe = System.Diagnostics.Process.GetCurrentProcess().MainModule.FileName;
+                string moduleDir = Path.GetDirectoryName(exe);
+                if (!string.IsNullOrEmpty(moduleDir) && Directory.Exists(moduleDir))
+                {
+                    return moduleDir;
+                }
+            }
+            catch { /* fall through */ }
+            // (2) GetWorkingDirectory.
+            try
+            {
+                string wd = UtinniCore.Utility.utility.GetWorkingDirectory();
+                if (!string.IsNullOrEmpty(wd) && Directory.Exists(wd))
+                {
+                    return wd;
+                }
+            }
+            catch { /* binding unavailable outside a live client */ }
+            // (3) ini fallback — sibling [TreBrowser] clientDir is the documented source.
+            try
+            {
+                string configured = ini.GetString("TreBrowser", "clientDir");
+                if (!string.IsNullOrEmpty(configured) && Directory.Exists(configured))
+                {
+                    return configured;
+                }
+            }
+            catch { /* ini may not have the key yet */ }
+            return null;
         }
 
         // ─────────────────────────────────────────────────────────────────────

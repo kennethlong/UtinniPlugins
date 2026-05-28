@@ -81,6 +81,9 @@
     <Compile Include="UI\Controls\TreDetailPane.cs">
       <SubType>UserControl</SubType>
     </Compile>
+    <Compile Include="UI\Controls\IffChunkTree.cs">
+      <SubType>UserControl</SubType>
+    </Compile>
     <Compile Include="UI\Forms\FormSnapshotSaveAsDialog.cs">
       <SubType>Form</SubType>
     </Compile>

@@ -79,7 +79,10 @@ namespace TJT.UI.Controls
         // (bottom), separated by two splitters so expanding the raw-bytes view never clobbers the tree.
         private readonly SplitContainer splitOuter = new SplitContainer(); // tree | (table+hex)
         private readonly SplitContainer splitInner = new SplitContainer(); // table | hex
-        private readonly TreeView tvChunks = new TreeView();
+        // 08-03 (D-09): the inline TreeView+BuildChunkNode surface was extracted into the shared
+        // IffChunkTree UserControl. The TRE Browser's chunk tree is now this UserControl; the
+        // editable IFF Editor (08-04) consumes the same control with its LoadMutable binding.
+        private readonly IffChunkTree iffChunkTree = new IffChunkTree();
         // per-type structured view — a uniform themed ListView (datatable rows, STF entries,
         // object-template fields, mesh/shader/UI-page summaries), with a title + row-cap truncation label.
         private readonly Panel pnlStructured = new Panel();
@@ -184,17 +187,15 @@ namespace TJT.UI.Controls
         /// <summary>
         /// Renders the universal IFF chunk tree from a parsed document. Public + standalone so
         /// Phase 8's IFF editor can reuse this exact surface and add editing on top (D-13).
+        ///
+        /// <para><b>08-03 (D-09):</b> delegates to the shared <see cref="IffChunkTree"/> UserControl
+        /// (extracted from this method's prior inline implementation + <c>BuildChunkNode</c>). The
+        /// Phase 7 read-only TRE Browser surface is functionally unchanged — labels, theming, and
+        /// expand-on-load are preserved verbatim.</para>
         /// </summary>
         public void LoadIff(IffDocument doc)
         {
-            tvChunks.BeginUpdate();
-            tvChunks.Nodes.Clear();
-            if (doc != null && doc.Root != null)
-            {
-                tvChunks.Nodes.Add(BuildChunkNode(doc.Root));
-                tvChunks.Nodes[0].Expand();
-            }
-            tvChunks.EndUpdate();
+            iffChunkTree.LoadDocument(doc);
         }
 
         public void ShowEncrypted(TreMetadata meta)
@@ -488,23 +489,10 @@ namespace TJT.UI.Controls
             pnlInfo.BringToFront();
         }
 
-        private TreeNode BuildChunkNode(IffChunk chunk)
-        {
-            var container = chunk as IffContainerChunk;
-            string label = container != null
-                ? chunk.TypeId + " " + container.SubTypeId + "  ·  " + chunk.LengthBytes + " bytes  ·  @" + chunk.OffsetBytes
-                : chunk.TypeId + "  ·  " + chunk.LengthBytes + " bytes  ·  @" + chunk.OffsetBytes;
-
-            var node = new TreeNode(label);
-            if (container != null)
-            {
-                foreach (IffChunk child in container.Children)
-                {
-                    node.Nodes.Add(BuildChunkNode(child));
-                }
-            }
-            return node;
-        }
+        // 08-03 (D-09): BuildChunkNode (formerly here) was extracted into IffChunkTree alongside
+        // the chunk-tree TreeView. The label format ('TAG [SubType]  ·  N bytes  ·  @offset') and
+        // recursive structure live in IffChunkTree.BuildChunkNode — Phase 7 read-only parity
+        // preserved at the byte level.
 
         private void FillHex(byte[] payload)
         {
@@ -666,13 +654,11 @@ namespace TJT.UI.Controls
             pnlReadable.Dock = DockStyle.Fill;
             pnlReadable.BackColor = Colors.Primary();
 
-            // Section 1 — universal IFF chunk tree.
-            tvChunks.Dock = DockStyle.Fill;
-            tvChunks.BackColor = Colors.PrimaryHighlight();
-            tvChunks.ForeColor = Colors.Font();
-            tvChunks.BorderStyle = BorderStyle.None;
-            tvChunks.HideSelection = false;
-            tvChunks.ShowLines = true;   // TreeView scrolls natively when nodes overflow
+            // Section 1 — universal IFF chunk tree (08-03 D-09 shared control). The IffChunkTree
+            // UserControl owns the themed TreeView (BackColor/ForeColor/BorderStyle/HideSelection/
+            // ShowLines settings extracted into IffChunkTree's ctor); we only Dock.Fill it into
+            // splitOuter.Panel1 here. The control's TreeView scrolls natively on overflow.
+            iffChunkTree.Dock = DockStyle.Fill;
 
             // Section 2 — per-type structured view (title + ListView + truncation label).
             pnlStructured.Dock = DockStyle.Fill;
@@ -752,7 +738,7 @@ namespace TJT.UI.Controls
             splitOuter.FixedPanel = FixedPanel.Panel1; // tree keeps its size on window resize
             splitOuter.Size = new Size(700, 600);
             splitOuter.SplitterDistance = 160;
-            splitOuter.Panel1.Controls.Add(tvChunks);
+            splitOuter.Panel1.Controls.Add(iffChunkTree);
             splitOuter.Panel2.Controls.Add(splitInner);
 
             lblRawNote.Dock = DockStyle.Top;
@@ -789,5 +775,26 @@ namespace TJT.UI.Controls
 
             Controls.Add(pnlContent);
         }
+
+        // ─────────────────────────────────────────────────────────────────────
+        // 08-03 (08-REVIEWS LOW-2): SIGNATURE PIN — pinned public read API
+        //
+        // The Phase 7 read-only TRE Browser (FormTreBrowser) is built against this control's public
+        // surface. The 08-03 extraction of the chunk-tree TreeView into the shared IffChunkTree
+        // UserControl MUST NOT change any of the signatures below; the constraint is grep-verified
+        // against FormTreBrowser.cs's call sites (_detail.<name>(...)).
+        //
+        // Pinned signatures (do not change without bumping Phase 7's call-site code in lock-step):
+        //
+        //   public void ShowEmpty();
+        //   public void ShowDecoding(TreMetadata meta);
+        //   public void ShowReadable(TreMetadata meta, byte[] payload);
+        //   public void ShowStringTable(TreMetadata meta, byte[] payload);
+        //   public void LoadIff(IffDocument doc);
+        //   public void ShowEncrypted(TreMetadata meta);
+        //   public void ShowUnsupportedRaw(TreMetadata meta, byte[] payload);
+        //   public void ShowParseFailure(TreMetadata meta, string reason);
+        //
+        // ─────────────────────────────────────────────────────────────────────
     }
 }

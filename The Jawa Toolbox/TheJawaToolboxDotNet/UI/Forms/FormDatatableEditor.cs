@@ -31,6 +31,7 @@ using System.Linq;
 using System.Windows.Forms;
 using TJT.UI.Controls;
 using UtinniCore.Utinni;
+using UtinniCoreDotNet.Editing;
 using UtinniCoreDotNet.Formats.Datatable;
 using UtinniCoreDotNet.Formats.Iff;
 using UtinniCoreDotNet.PluginFramework;
@@ -67,6 +68,17 @@ namespace TJT.UI.Forms
         private readonly ToolTip toolTip = new ToolTip();
 
         private DataTableDocument dtDocument;
+
+        // Editor-local undo/redo + structural-op engine (Plan 09-04). Null until LoadDocument binds a
+        // document; cell edits + structural ops route through controller.Apply.
+        private DatatableEditController controller;
+
+        // D-02 column-reorder/delete safety-net session-suppress flag (UI-SPEC assumption #5). Set when
+        // the user ticks "Don't ask again this session"; per-form-instance, resets on Hide.
+        private bool sessionSuppressColumnSafetyNet;
+
+        // Right-click context menu for row/column/cell structural ops (built lazily on first bind).
+        private ContextMenuStrip gridContextMenu;
 
         // Friendly display name for the loaded document (Save As… default name in Plan 09-05).
         private string displayName;
@@ -130,10 +142,6 @@ namespace TJT.UI.Forms
             // Deferred-feature toolbar buttons ship DISABLED with explanatory tooltips (iter-2 item
             // 4 — NOT click handlers that throw). Subsequent plans enable + wire them.
             toolTip.SetToolTip(btnSave, "Saving is wired by a later step (Plan 09-05).");
-            toolTip.SetToolTip(btnUndo, "Undo is wired by a later step (Plan 09-04).");
-            toolTip.SetToolTip(btnRedo, "Redo is wired by a later step (Plan 09-04).");
-            toolTip.SetToolTip(btnAddRow, "Add row is wired by a later step (Plan 09-04).");
-            toolTip.SetToolTip(btnAddColumn, "Add column is wired by a later step (Plan 09-04).");
             toolTip.SetToolTip(btnImportCsv, "CSV import is wired by a later step (Plan 09-06).");
             toolTip.SetToolTip(btnExportCsv, "CSV export is wired by a later step (Plan 09-06).");
             toolTip.SetToolTip(btnFind, "Find is wired by a later step (Plan 09-06).");
@@ -143,6 +151,15 @@ namespace TJT.UI.Forms
             btnOpen.Click += OnOpenClicked;
             btnReload.Click += OnReloadClicked;
             btnSave.Click += OnSaveButtonClick;
+
+            // Plan 09-04: controller-backed undo/redo + structural ops. The buttons stay DISABLED until
+            // a document is bound (UpdateUndoRedoState / OnEditApplied flip them); their handlers route
+            // through the controller.
+            btnUndo.Click += OnUndoClicked;
+            btnRedo.Click += OnRedoClicked;
+            btnAddRow.Click += OnAddRowClicked;
+            btnAddColumn.Click += OnAddColumnClicked;
+            btnResolveCascade.Click += OnResolveCascadeClicked;
 
             // Grid-binding commit-back wiring (iter-2 item 1).
             gridSurface.CellEndEdit += OnCellEndEdit;
@@ -205,6 +222,13 @@ namespace TJT.UI.Forms
             this.Source = source ?? OpenSource.Unknown.Instance;
             this.displayName = displayName;
 
+            // Plan 09-04: wire the editor-local undo/redo + structural-op controller. Replaces Plan
+            // 09-03's null-controller staging. The session safety-net flag resets on each fresh load.
+            if (controller != null) controller.EditApplied -= OnEditApplied;
+            controller = new DatatableEditController(doc.Mutable);
+            controller.EditApplied += OnEditApplied;
+            sessionSuppressColumnSafetyNet = false;
+
             MutableDataTableDocument mutable = doc.Mutable;
             var columns = mutable.Columns
                 .Select(c => DatatableColumnFactory.Build(c.Name, c.ColumnType))
@@ -212,10 +236,268 @@ namespace TJT.UI.Forms
 
             gridSurface.BindMutable(mutable, columns);
 
+            EnsureGridContextMenu();
+
             lblEmptyState.Visible = false;
+            UpdateUndoRedoState();
             UpdateDirtyVisuals();
             RefreshSaveMenuEnabledState();
             UpdateCounters();
+            btnResolveCascade.Visible = controller.PendingCascadeContext != null;
+        }
+
+        // ── Controller event wiring (Plan 09-04) ─────────────────────────────
+
+        private void OnEditApplied(object sender, EventArgs e)
+        {
+            if (dtDocument != null) gridSurface.RefreshMutable(dtDocument.Mutable);
+            UpdateUndoRedoState();
+            UpdateDirtyVisuals();
+            RefreshSaveMenuEnabledState();
+            UpdateCounters();
+            btnResolveCascade.Visible = controller != null && controller.PendingCascadeContext != null;
+        }
+
+        private void UpdateUndoRedoState()
+        {
+            btnUndo.Enabled = controller != null && controller.CanUndo;
+            btnRedo.Enabled = controller != null && controller.CanRedo;
+            btnAddRow.Enabled = controller != null;
+            btnAddColumn.Enabled = controller != null;
+        }
+
+        private void OnUndoClicked(object sender, EventArgs e)
+        {
+            if (controller != null && controller.CanUndo) controller.Undo();
+        }
+
+        private void OnRedoClicked(object sender, EventArgs e)
+        {
+            if (controller != null && controller.CanRedo) controller.Redo();
+        }
+
+        // ── Structural ops: Add row / Add column… ────────────────────────────
+
+        private void OnAddRowClicked(object sender, EventArgs e)
+        {
+            if (controller == null || dtDocument == null) return;
+            controller.Apply(DatatableEditCommands.AddRow(dtDocument.Mutable, dtDocument.Mutable.Rows.Count));
+            RebindGrid();
+        }
+
+        private void OnAddColumnClicked(object sender, EventArgs e)
+        {
+            if (controller == null || dtDocument == null) return;
+            using (var dlg = new FormAddColumnDialog(dtDocument.Mutable.Columns.Select(c => c.Name)))
+            {
+                if (dlg.ShowDialog(this) == DialogResult.OK)
+                {
+                    controller.Apply(DatatableEditCommands.AddColumn(
+                        dtDocument.Mutable, dlg.Result.Name, dlg.Result.ColumnType, dtDocument.Mutable.Columns.Count));
+                    RebindGrid();
+                }
+            }
+        }
+
+        // Structural ops change the grid's column/row shape, so a full rebind is required (OnEditApplied
+        // alone only re-paints the existing cells). Rebuilds columns + rows from the mutated model.
+        private void RebindGrid()
+        {
+            if (dtDocument == null) return;
+            MutableDataTableDocument mutable = dtDocument.Mutable;
+            var columns = mutable.Columns
+                .Select(c => DatatableColumnFactory.Build(c.Name, c.ColumnType))
+                .ToList();
+            gridSurface.BindMutable(mutable, columns);
+        }
+
+        // ── Grid context menu (Remove/Move row + Remove/Move/Rename/ChangeType column) ──
+
+        private void EnsureGridContextMenu()
+        {
+            if (gridContextMenu != null) return;
+            gridContextMenu = new ContextMenuStrip();
+            gridContextMenu.Items.Add("Remove row", null, (s, e) => RemoveSelectedRow());
+            gridContextMenu.Items.Add("Move row up", null, (s, e) => MoveSelectedRow(-1));
+            gridContextMenu.Items.Add("Move row down", null, (s, e) => MoveSelectedRow(+1));
+            gridContextMenu.Items.Add(new ToolStripSeparator());
+            gridContextMenu.Items.Add("Remove column", null, (s, e) => RemoveSelectedColumn());
+            gridContextMenu.Items.Add("Move column left", null, (s, e) => MoveSelectedColumn(-1));
+            gridContextMenu.Items.Add("Move column right", null, (s, e) => MoveSelectedColumn(+1));
+            gridContextMenu.Items.Add("Rename column…", null, (s, e) => RenameSelectedColumn());
+            gridContextMenu.Items.Add("Change column type…", null, (s, e) => ChangeSelectedColumnType());
+            gridSurface.ContextMenuStrip = gridContextMenu;
+        }
+
+        private int SelectedRowIndex()
+        {
+            return gridSurface.CurrentCell != null ? gridSurface.CurrentCell.RowIndex : -1;
+        }
+
+        private int SelectedColumnIndex()
+        {
+            return gridSurface.CurrentCell != null ? gridSurface.CurrentCell.ColumnIndex : -1;
+        }
+
+        private void RemoveSelectedRow()
+        {
+            int r = SelectedRowIndex();
+            if (controller == null || dtDocument == null || r < 0 || r >= dtDocument.Mutable.Rows.Count) return;
+            controller.Apply(DatatableEditCommands.RemoveRow(dtDocument.Mutable.Rows[r]));
+            RebindGrid();
+        }
+
+        private void MoveSelectedRow(int direction)
+        {
+            int r = SelectedRowIndex();
+            if (controller == null || dtDocument == null || r < 0 || r >= dtDocument.Mutable.Rows.Count) return;
+            MutableDataTableRow row = dtDocument.Mutable.Rows[r];
+            controller.Apply(direction < 0
+                ? DatatableEditCommands.MoveRowUp(row)
+                : DatatableEditCommands.MoveRowDown(row));
+            RebindGrid();
+        }
+
+        private void RemoveSelectedColumn()
+        {
+            int c = SelectedColumnIndex();
+            if (controller == null || dtDocument == null || c < 0 || c >= dtDocument.Mutable.Columns.Count) return;
+            if (!ConfirmColumnSafetyNet()) return;
+            controller.Apply(DatatableEditCommands.RemoveColumn(dtDocument.Mutable.Columns[c]));
+            RebindGrid();
+        }
+
+        private void MoveSelectedColumn(int direction)
+        {
+            int c = SelectedColumnIndex();
+            if (controller == null || dtDocument == null || c < 0 || c >= dtDocument.Mutable.Columns.Count) return;
+            if (!ConfirmColumnSafetyNet()) return;
+            MutableDataTableColumn col = dtDocument.Mutable.Columns[c];
+            controller.Apply(direction < 0
+                ? DatatableEditCommands.MoveColumnLeft(col)
+                : DatatableEditCommands.MoveColumnRight(col));
+            RebindGrid();
+        }
+
+        private void RenameSelectedColumn()
+        {
+            int c = SelectedColumnIndex();
+            if (controller == null || dtDocument == null || c < 0 || c >= dtDocument.Mutable.Columns.Count) return;
+            MutableDataTableColumn col = dtDocument.Mutable.Columns[c];
+            using (var dlg = new FormFourCcDialog("Rename column", col.Name))
+            {
+                dlg.Text = "Rename column";
+                if (dlg.ShowDialog(this) == DialogResult.OK)
+                {
+                    string newName = dlg.Value != null ? dlg.Value.Trim() : string.Empty;
+                    if (newName.Length > 0)
+                    {
+                        controller.Apply(DatatableEditCommands.RenameColumn(col, newName));
+                        RebindGrid();
+                    }
+                }
+            }
+        }
+
+        private void ChangeSelectedColumnType()
+        {
+            int c = SelectedColumnIndex();
+            if (controller == null || dtDocument == null || c < 0 || c >= dtDocument.Mutable.Columns.Count) return;
+            MutableDataTableColumn col = dtDocument.Mutable.Columns[c];
+
+            using (var dlg = new FormAddColumnDialog(System.Array.Empty<string>()))
+            {
+                dlg.Text = "Change column type";
+                if (dlg.ShowDialog(this) != DialogResult.OK) return;
+                controller.Apply(DatatableEditCommands.ChangeColumnType(col, dlg.Result.ColumnType));
+                RebindGrid();
+            }
+
+            // If the cascade flagged cells, surface the resolution modal from the controller state.
+            if (controller.PendingCascadeContext != null)
+            {
+                ShowCascadeDialog();
+            }
+        }
+
+        // ── D-02 column-reorder/delete safety-net (REUSE FormSaveConfirmDialog) ──
+
+        private bool ConfirmColumnSafetyNet()
+        {
+            if (sessionSuppressColumnSafetyNet) return true;
+            using (var dlg = new FormSaveConfirmDialog(
+                heading: "Reorder or delete a column?",
+                body: "This may break runtime consumers that read columns by index. Proceed?",
+                acceptVerb: "Proceed",
+                cancelVerb: "Cancel",
+                showBackupCheckbox: true,
+                backupCheckboxLabel: "Don't ask again this session"))
+            {
+                dlg.ShowDialog(this);
+                if (dlg.Outcome == FormSaveConfirmDialog.ConfirmOutcome.Cancelled) return false;
+                if (dlg.BackupRequested) sessionSuppressColumnSafetyNet = true;
+                return true;
+            }
+        }
+
+        // ── Resolve-cascade button + cascade modal ───────────────────────────
+
+        private void OnResolveCascadeClicked(object sender, EventArgs e)
+        {
+            if (controller != null && controller.PendingCascadeContext != null)
+            {
+                ShowCascadeDialog();
+            }
+        }
+
+        private void ShowCascadeDialog()
+        {
+            PendingTypeChangeCascade cascade = controller.PendingCascadeContext;
+            if (cascade == null) return;
+
+            MutableDataTableColumn col = cascade.ColumnIndex >= 0 && cascade.ColumnIndex < dtDocument.Mutable.Columns.Count
+                ? dtDocument.Mutable.Columns[cascade.ColumnIndex]
+                : null;
+            if (col == null) return;
+
+            using (var dlg = new FormTypeChangeCascadeDialog(
+                col, cascade.NewType, new List<MutableDataTableCell>(cascade.NeedsReviewCellRefs)))
+            {
+                dlg.ShowDialog(this);
+                if (dlg.Outcome == FormTypeChangeCascadeDialog.CascadeOutcome.Revert)
+                {
+                    // Roll the ChangeColumnType command back via the editor-local undo stack — the
+                    // command's UndoOp clears PendingCascadeContext.
+                    if (controller.CanUndo) controller.Undo();
+                    RebindGrid();
+                }
+                else if (dlg.Outcome == FormTypeChangeCascadeDialog.CascadeOutcome.EditCellRequested)
+                {
+                    FocusCell(dlg.EditCellTarget);
+                }
+                else
+                {
+                    RebindGrid();
+                }
+            }
+        }
+
+        private void FocusCell(MutableDataTableCell target)
+        {
+            if (target == null || dtDocument == null) return;
+            for (int r = 0; r < dtDocument.Mutable.Rows.Count; r++)
+            {
+                var cells = dtDocument.Mutable.Rows[r].Cells;
+                for (int c = 0; c < cells.Count; c++)
+                {
+                    if (ReferenceEquals(cells[c], target) && r < gridSurface.Rows.Count && c < gridSurface.Columns.Count)
+                    {
+                        gridSurface.CurrentCell = gridSurface.Rows[r].Cells[c];
+                        gridSurface.Focus();
+                        return;
+                    }
+                }
+            }
         }
 
         // ── Keyboard shortcuts (Ctrl+S / Ctrl+Z / Ctrl+Y) ────────────────────
@@ -227,12 +509,20 @@ namespace TJT.UI.Forms
         {
             if (keyData == (Keys.Control | Keys.Z))
             {
-                // ToDo Plan 09-04: route to controller.Undo() once the DatatableEditController ships.
+                if (controller != null && controller.CanUndo)
+                {
+                    controller.Undo();
+                    RebindGrid();
+                }
                 return true;
             }
             if (keyData == (Keys.Control | Keys.Y))
             {
-                // ToDo Plan 09-04: route to controller.Redo() once the DatatableEditController ships.
+                if (controller != null && controller.CanRedo)
+                {
+                    controller.Redo();
+                    RebindGrid();
+                }
                 return true;
             }
             if (keyData == (Keys.Control | Keys.S))
@@ -291,12 +581,16 @@ namespace TJT.UI.Forms
             object gridValue = gridSurface.Rows[rowIndex].Cells[columnIndex].Value;
             string raw = gridValue == null ? string.Empty : gridValue.ToString();
 
+            // Plan 09-04: route the edit through controller.Apply(EditCellValue) so it joins the undo/
+            // redo stack (replaces the Plan 09-03 direct cell.Value setter). The EditCellValue command
+            // is a no-op-friendly write — an equal value preserves the original slice + clean state.
+            DataTableCellValue newValue;
             switch (ct.Type)
             {
                 case DataType.Bool:
                 {
                     bool isChecked = gridValue is bool b && b;
-                    cell.Value = DataTableCellValue.FromInt(isChecked ? 1 : 0);
+                    newValue = DataTableCellValue.FromInt(isChecked ? 1 : 0);
                     break;
                 }
                 case DataType.HashString:
@@ -305,7 +599,7 @@ namespace TJT.UI.Forms
                     // string is NOT persisted (only the int32 is on disk).
                     uint hash = DataTableHashCrc.Compute(raw);
                     int stored = unchecked((int)hash);
-                    cell.Value = DataTableCellValue.FromInt(stored);
+                    newValue = DataTableCellValue.FromInt(stored);
                     // Reflect the stored int32 back into the grid display (item 5 default display).
                     gridSurface.Rows[rowIndex].Cells[columnIndex].Value =
                         stored.ToString(CultureInfo.InvariantCulture);
@@ -318,7 +612,7 @@ namespace TJT.UI.Forms
                     DataTableCellValue coerced;
                     if (ct.TryCoerceCellValue(raw, out coerced))
                     {
-                        cell.Value = coerced;
+                        newValue = coerced;
                     }
                     else
                     {
@@ -328,6 +622,15 @@ namespace TJT.UI.Forms
                     }
                     break;
                 }
+            }
+
+            if (controller != null)
+            {
+                controller.Apply(DatatableEditCommands.EditCellValue(cell, newValue));
+            }
+            else
+            {
+                cell.Value = newValue;
             }
 
             gridSurface.RefreshMutable(dtDocument.Mutable);
@@ -440,16 +743,39 @@ namespace TJT.UI.Forms
             };
         }
 
-        // STUB in Plan 09-03: all items stay disabled. Plan 09-05 wires the provenance pattern-match
-        // against Source; Plan 09-04 adds the NeedsReviewCount > 0 blocking gate.
+        // Plan 09-04 NeedsReview gate (UI-SPEC R-04): every Save▾ menu item AND the top-level button
+        // disable while controller.NeedsReviewCount > 0, with the locked tooltip surfaced on EACH item
+        // (not just the button face). Plan 09-05 composes the provenance gate ON TOP of this gate — for
+        // now the base enabled state stays false (save targets are not wired until 09-05), but the
+        // NeedsReview gate + tooltip are applied so the R-04 contract is observable from this plan.
         private void RefreshSaveMenuEnabledState()
         {
-            if (miSaveInPlace != null) miSaveInPlace.Enabled = false;
-            if (miSaveLooseOverride != null) miSaveLooseOverride.Enabled = false;
-            if (miSaveAs != null) miSaveAs.Enabled = false;
-            if (miPatchLive != null) miPatchLive.Enabled = false;
-            if (miRepackTre != null) miRepackTre.Enabled = false;
-            btnSave.Enabled = false;
+            bool blockedByCascade = controller != null && controller.NeedsReviewCount > 0;
+            string cascadeTooltip = "Resolve " + (controller != null ? controller.NeedsReviewCount : 0)
+                                    + " cell(s) that need review before saving.";
+
+            // Plan 09-05 flips these base-enabled states on per the provenance pattern-match; until then
+            // they are disabled. The NeedsReview gate further forces them off + surfaces the tooltip.
+            ApplyNeedsReviewGate(miSaveInPlace, false, blockedByCascade, cascadeTooltip);
+            ApplyNeedsReviewGate(miSaveLooseOverride, false, blockedByCascade, cascadeTooltip);
+            ApplyNeedsReviewGate(miSaveAs, false, blockedByCascade, cascadeTooltip);
+            ApplyNeedsReviewGate(miPatchLive, false, blockedByCascade, cascadeTooltip);
+            ApplyNeedsReviewGate(miRepackTre, false, blockedByCascade, cascadeTooltip);
+
+            bool hasDoc = dtDocument != null;
+            btnSave.Enabled = hasDoc && !blockedByCascade && false; // 09-05 composes the real enable here
+        }
+
+        // Applies the per-item NeedsReview gate: the item is enabled only when its base-enabled state is
+        // true AND no cascade is blocking; when blocked, the locked R-04 tooltip is surfaced on the item.
+        private static void ApplyNeedsReviewGate(ToolStripMenuItem item, bool baseEnabled, bool blockedByCascade, string cascadeTooltip)
+        {
+            if (item == null) return;
+            item.Enabled = baseEnabled && !blockedByCascade;
+            if (blockedByCascade)
+            {
+                item.ToolTipText = cascadeTooltip;
+            }
         }
 
         private void OnSaveButtonClick(object sender, EventArgs e)
@@ -494,15 +820,17 @@ namespace TJT.UI.Forms
                 if (m.Rows[r].IsDirty) dirtyRows++;
             }
 
-            if (dirtyRows == 0)
+            int needsReview = controller != null ? controller.NeedsReviewCount : 0;
+
+            if (dirtyRows == 0 && needsReview == 0)
             {
                 lblCounters.Text = m.Rows.Count + " rows · " + m.Columns.Count + " cols";
                 lblCounters.ForeColor = Colors.FontDisabled();
             }
             else
             {
-                lblCounters.Text = m.Rows.Count + " rows · " + m.Columns.Count + " cols · 0 needs review · "
-                                   + dirtyRows + " dirty";
+                lblCounters.Text = m.Rows.Count + " rows · " + m.Columns.Count + " cols · "
+                                   + needsReview + " needs review · " + dirtyRows + " dirty";
                 lblCounters.ForeColor = Colors.Font();
             }
         }

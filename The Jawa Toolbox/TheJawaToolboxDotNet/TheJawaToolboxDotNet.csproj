@@ -102,6 +102,18 @@
     <Compile Include="UI\Forms\FormSaveConfirmDialog.Designer.cs">
       <DependentUpon>FormSaveConfirmDialog.cs</DependentUpon>
     </Compile>
+    <Compile Include="UI\Forms\FormAddColumnDialog.cs">
+      <SubType>Form</SubType>
+    </Compile>
+    <Compile Include="UI\Forms\FormAddColumnDialog.Designer.cs">
+      <DependentUpon>FormAddColumnDialog.cs</DependentUpon>
+    </Compile>
+    <Compile Include="UI\Forms\FormTypeChangeCascadeDialog.cs">
+      <SubType>Form</SubType>
+    </Compile>
+    <Compile Include="UI\Forms\FormTypeChangeCascadeDialog.Designer.cs">
+      <DependentUpon>FormTypeChangeCascadeDialog.cs</DependentUpon>
+    </Compile>
     <Compile Include="UI\Controls\DatatableColumnFactory.cs" />
     <Compile Include="UI\Controls\DatatableHashStringEditor.cs" />
     <Compile Include="UI\Controls\DatatableNumericUpDownEditingControl.cs">

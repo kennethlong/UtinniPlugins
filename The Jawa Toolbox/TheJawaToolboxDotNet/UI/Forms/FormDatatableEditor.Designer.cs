@@ -59,6 +59,8 @@ namespace TJT.UI.Forms
             this.btnReplace = new UtinniCoreDotNet.UI.Controls.UtinniButton();
             this.sep5 = new System.Windows.Forms.Panel();
             this.btnReload = new UtinniCoreDotNet.UI.Controls.UtinniButton();
+            this.sep6 = new System.Windows.Forms.Panel();
+            this.btnResolveCascade = new UtinniCoreDotNet.UI.Controls.UtinniButton();
             this.lblReloadBadge = new UtinniCoreDotNet.UI.Controls.UtinniLabel();
             this.lblDirty = new UtinniCoreDotNet.UI.Controls.UtinniLabel();
             this.pnlFindReplace = new System.Windows.Forms.Panel();
@@ -218,6 +220,22 @@ namespace TJT.UI.Forms
             this.btnReload.UseDisableColor = true;
             this.btnReload.UseVisualStyleBackColor = true;
             //
+            // sep6
+            //
+            this.sep6.Dock = System.Windows.Forms.DockStyle.Left;
+            this.sep6.Width = 4;
+            this.sep6.Name = "sep6";
+            //
+            // btnResolveCascade (HIDDEN until a cascade is pending — Plan 09-04 D-04)
+            //
+            this.btnResolveCascade.Dock = System.Windows.Forms.DockStyle.Left;
+            this.btnResolveCascade.Width = 130;
+            this.btnResolveCascade.Name = "btnResolveCascade";
+            this.btnResolveCascade.Text = "Resolve cascade…";
+            this.btnResolveCascade.Visible = false;
+            this.btnResolveCascade.UseDisableColor = true;
+            this.btnResolveCascade.UseVisualStyleBackColor = true;
+            //
             // lblReloadBadge (Right cluster — CF-05 locked text)
             //
             this.lblReloadBadge.Dock = System.Windows.Forms.DockStyle.Right;
@@ -242,7 +260,9 @@ namespace TJT.UI.Forms
             //
             this.toolbar.Controls.Add(this.lblReloadBadge);  // Right
             this.toolbar.Controls.Add(this.lblDirty);         // Right
-            this.toolbar.Controls.Add(this.btnReload);        // Left (rightmost of left cluster)
+            this.toolbar.Controls.Add(this.btnResolveCascade); // Left (rightmost of left cluster)
+            this.toolbar.Controls.Add(this.sep6);
+            this.toolbar.Controls.Add(this.btnReload);        // Left
             this.toolbar.Controls.Add(this.sep5);
             this.toolbar.Controls.Add(this.btnReplace);
             this.toolbar.Controls.Add(this.btnFind);
@@ -358,6 +378,8 @@ namespace TJT.UI.Forms
         private UtinniCoreDotNet.UI.Controls.UtinniButton btnReplace;
         private System.Windows.Forms.Panel sep5;
         private UtinniCoreDotNet.UI.Controls.UtinniButton btnReload;
+        private System.Windows.Forms.Panel sep6;
+        private UtinniCoreDotNet.UI.Controls.UtinniButton btnResolveCascade;
         private UtinniCoreDotNet.UI.Controls.UtinniLabel lblReloadBadge;
         private UtinniCoreDotNet.UI.Controls.UtinniLabel lblDirty;
         private System.Windows.Forms.Panel pnlFindReplace;

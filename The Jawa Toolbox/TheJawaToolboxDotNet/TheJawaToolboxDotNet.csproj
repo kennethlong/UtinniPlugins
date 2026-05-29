@@ -171,8 +171,9 @@
     <Compile Include="UI\SubPanels\ScenePanel.Designer.cs">
       <DependentUpon>ScenePanel.cs</DependentUpon>
     </Compile>
-    <Compile Include="Saving\IffSaveTargets.cs" />
     <Compile Include="Saving\ClientReloadDispatcher.cs" />
+    <Compile Include="Saving\DatatableSaveTargets.cs" />
+    <Compile Include="Saving\IffSaveTargets.cs" />
     <Compile Include="Saving\LivePatchSaveTarget.cs" />
     <Compile Include="Saving\TreRepackSaveTarget.cs" />
     <Compile Include="SWG\CuiImpl.cs" />

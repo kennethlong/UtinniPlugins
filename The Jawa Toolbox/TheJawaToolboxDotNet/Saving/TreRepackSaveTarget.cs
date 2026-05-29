@@ -28,6 +28,7 @@ using System.IO;
 using System.Threading.Tasks;
 using UtinniCoreDotNet.Formats.Iff;
 using UtinniCoreDotNet.Formats.Tre;
+using UtinniCoreDotNet.Saving;
 
 namespace TJT.Saving
 {
@@ -183,10 +184,15 @@ namespace TJT.Saving
                 }
 
                 // ── 4. Optional timestamped backup (08-REVIEWS MEDIUM-10) ────
+                // The timestamped-backup-path helper is framework-side
+                // (UtinniCoreDotNet.Saving.TreBackupPath) so CI's Utinni-only checkout
+                // can unit-test the naming-and-disambiguation contract without a
+                // UtinniPlugins checkout. The helper takes an explicit DateTime so
+                // production code passes UtcNow while tests pin a known instant.
                 string backupPath = null;
                 if (createBackup)
                 {
-                    backupPath = ResolveTimestampedBackupPath(trePath);
+                    backupPath = TreBackupPath.NextAvailable(trePath, DateTime.UtcNow);
                     try
                     {
                         File.Copy(trePath, backupPath, overwrite: false);
@@ -240,47 +246,16 @@ namespace TJT.Saving
         // ─────────────────────────────────────────────────────────────────────
 
         /// <summary>
-        /// Constructs <c>&lt;trePath&gt;.&lt;yyyyMMdd-HHmmss&gt;.bak</c> using UTC for the
-        /// timestamp. If that name already exists (extremely unlikely sub-second collision
-        /// from a back-to-back retry), appends a <c>-N</c> disambiguator until a non-existing
-        /// name is found. NEVER overwrites a prior backup (08-REVIEWS MEDIUM-10 disposition).
-        /// </summary>
-        private static string ResolveTimestampedBackupPath(string trePath)
-        {
-            string stamp = DateTime.UtcNow.ToString("yyyyMMdd-HHmmss");
-            string candidate = trePath + "." + stamp + ".bak";
-            if (!File.Exists(candidate)) return candidate;
-
-            // Disambiguate. Bounded loop — File.Exists at -1, -2, -3, ... should resolve
-            // in a few iterations even under pathological sub-second retries.
-            for (int n = 1; n < 1000; n++)
-            {
-                string disambiguated = trePath + "." + stamp + "-" + n + ".bak";
-                if (!File.Exists(disambiguated)) return disambiguated;
-            }
-            // Pathological fallback: append a GUID so we never overwrite. Still never
-            // overwrites — File.Copy with overwrite:false will throw if it somehow exists.
-            return trePath + "." + stamp + "-" + Guid.NewGuid().ToString("N") + ".bak";
-        }
-
-        /// <summary>
-        /// True iff the <see cref="IOException"/> reflects ERROR_SHARING_VIOLATION (HResult
-        /// 0x80070020) — the canonical "file in use" failure on Windows. We deliberately
-        /// match ONLY this HResult rather than substring-matching the localized message; this
-        /// avoids language-dependent false positives and false negatives. Any other IOException
-        /// flows through to the generic <see cref="TreRepackResult.Failed"/> path.
+        /// Delegates to the framework-side <see cref="TreRepackLock.IsSharingViolation"/>
+        /// so both call sites use the same canonical HResult-based detector. The save
+        /// target keeps a 1-line shim only because the BCL <see cref="IOException"/>
+        /// catch-when filter cannot directly call a method from another namespace
+        /// without an awkward static-import (the framework method is already public
+        /// static so this shim keeps the catch-when clause readable).
         /// </summary>
         private static bool IsSharingViolation(IOException ex)
         {
-            // ERROR_SHARING_VIOLATION = 32 → HRESULT 0x80070020.
-            const int errorSharingViolation = unchecked((int)0x80070020);
-            // ERROR_LOCK_VIOLATION       = 33 → HRESULT 0x80070021. Some Windows paths use this
-            // for the same "file is locked / cannot share" semantic; treat it equivalently so
-            // the user-facing copy is correct for either code (08-REVIEWS MEDIUM-10).
-            const int errorLockViolation = unchecked((int)0x80070021);
-            // Marshal.GetHRForException(ex) would always re-fetch the HResult; ex.HResult is
-            // sufficient on netfx 4.7.2 and matches what the BCL set.
-            return ex.HResult == errorSharingViolation || ex.HResult == errorLockViolation;
+            return TreRepackLock.IsSharingViolation(ex);
         }
 
         private static void SafeDelete(string path)

@@ -28,13 +28,17 @@ using System.Drawing;
 using System.Globalization;
 using System.IO;
 using System.Linq;
+using System.Threading.Tasks;
 using System.Windows.Forms;
+using TJT.Saving;
 using TJT.UI.Controls;
 using UtinniCore.Utinni;
 using UtinniCoreDotNet.Editing;
 using UtinniCoreDotNet.Formats.Datatable;
 using UtinniCoreDotNet.Formats.Iff;
+using UtinniCoreDotNet.Formats.Tre;
 using UtinniCoreDotNet.PluginFramework;
+using UtinniCoreDotNet.Saving;
 using UtinniCoreDotNet.UI;
 using UtinniCoreDotNet.UI.Controls;
 using UtinniCoreDotNet.UI.Forms;
@@ -101,6 +105,12 @@ namespace TJT.UI.Forms
         private DatatableHashStringEditor hashEditor;
         private TextBox activeHashEditingControl;
 
+        // Plan 09-05: save-in-flight barrier (PATTERNS § High-Leverage Reuse Points #4 + Phase 8
+        // MEDIUM-9 stale-bytes reload race). True while a Save▾ Task is awaiting; disables Save▾ +
+        // Reload until the await completes. lastSavedPath drives the reload-dispatch classification.
+        private bool saveInFlight;
+        private string lastSavedPath;
+
         public FormDatatableEditor(IEditorPlugin editorPlugin)
         {
             InitializeComponent();
@@ -140,8 +150,9 @@ namespace TJT.UI.Forms
             Source = OpenSource.Unknown.Instance;
 
             // Deferred-feature toolbar buttons ship DISABLED with explanatory tooltips (iter-2 item
-            // 4 — NOT click handlers that throw). Subsequent plans enable + wire them.
-            toolTip.SetToolTip(btnSave, "Saving is wired by a later step (Plan 09-05).");
+            // 4 — NOT click handlers that throw). Subsequent plans enable + wire them. Plan 09-05
+            // wires Save▾ (btnSave is the drop-down anchor) so its tooltip is no longer the deferred copy.
+            toolTip.SetToolTip(btnSave, "Save the current datatable (choose a target).");
             toolTip.SetToolTip(btnImportCsv, "CSV import is wired by a later step (Plan 09-06).");
             toolTip.SetToolTip(btnExportCsv, "CSV export is wired by a later step (Plan 09-06).");
             toolTip.SetToolTip(btnFind, "Find is wired by a later step (Plan 09-06).");
@@ -714,16 +725,26 @@ namespace TJT.UI.Forms
 
         // ── Save▾ drop-down (items DISABLED + tooltip in Plan 09-03) ─────────
 
+        // Plan 09-05: the five Save▾ items now carry click handlers dispatching to DatatableSaveTargets.
+        // Their ENABLED state is composed by RefreshSaveMenuEnabledState (provenance gate ON TOP of Plan
+        // 09-04's NeedsReview gate). Patch live client stays disabled (CF-03) with the inherited tooltip.
         private void BuildSaveMenu()
         {
             saveMenu = new UtinniContextMenuStrip();
-            miSaveInPlace = MakeDisabledSaveItem("Save (in place)");
-            miSaveLooseOverride = MakeDisabledSaveItem("Save as loose override");
-            miSaveAs = MakeDisabledSaveItem("Save As…");
-            miPatchLive = MakeDisabledSaveItem("Patch live client (in memory)");
+            miSaveInPlace = new ToolStripMenuItem("Save (in place)");
+            miSaveInPlace.Click += OnSaveInPlaceClick;
+            miSaveLooseOverride = new ToolStripMenuItem("Save as loose override");
+            miSaveLooseOverride.Click += OnSaveLooseOverrideClick;
+            miSaveAs = new ToolStripMenuItem("Save As…");
+            miSaveAs.Click += OnSaveAsClick;
+            miPatchLive = new ToolStripMenuItem("Patch live client (in memory)");
+            miPatchLive.Enabled = false; // CF-03 — Mode 3 disabled in Phase 9.
             miPatchLive.ToolTipText = "Live patch requires opening from client memory — not wired in this phase.";
-            miRepackTre = MakeDisabledSaveItem("Repack into source .tre…");
+            miPatchLive.Click += OnPatchLiveClientClick;
+            miRepackTre = new ToolStripMenuItem("Repack into source .tre…");
+            miRepackTre.Enabled = false;
             miRepackTre.ToolTipText = "Open from a packed .tre to repack the source archive.";
+            miRepackTre.Click += OnRepackTreClick;
             saveMenu.Items.AddRange(new ToolStripItem[]
             {
                 miSaveInPlace, miSaveLooseOverride, miSaveAs,
@@ -732,58 +753,382 @@ namespace TJT.UI.Forms
             });
         }
 
-        // Each Save▾ item ships DISABLED with an explanatory tooltip (iter-2 item 4 — NOT a click
-        // handler that throws). Plan 09-05 wires the provenance-gated enabled state + handlers.
-        private static ToolStripMenuItem MakeDisabledSaveItem(string caption)
-        {
-            return new ToolStripMenuItem(caption)
-            {
-                Enabled = false,
-                ToolTipText = "Saving is wired by a later step (Plan 09-05)."
-            };
-        }
-
-        // Plan 09-04 NeedsReview gate (UI-SPEC R-04): every Save▾ menu item AND the top-level button
-        // disable while controller.NeedsReviewCount > 0, with the locked tooltip surfaced on EACH item
-        // (not just the button face). Plan 09-05 composes the provenance gate ON TOP of this gate — for
-        // now the base enabled state stays false (save targets are not wired until 09-05), but the
-        // NeedsReview gate + tooltip are applied so the R-04 contract is observable from this plan.
+        // Plan 09-05: composes the PROVENANCE gate (OpenSource pattern-match) ON TOP of Plan 09-04's
+        // NeedsReview gate. Each Save▾ item's final enabled state is
+        // `provenanceAllowsThisMode && !blockedByCascade && !saveInFlight` (UI-SPEC R-04 + round-2
+        // MEDIUM 5 escape-hatch posture). When the cascade blocks, the locked R-04 tooltip wins on
+        // EACH item. Save As… stays enabled on any loaded document (incl. Unknown) unless a cascade
+        // blocks — the user's explicit escape hatch. Patch live client stays disabled (CF-03).
         private void RefreshSaveMenuEnabledState()
         {
-            bool blockedByCascade = controller != null && controller.NeedsReviewCount > 0;
-            string cascadeTooltip = "Resolve " + (controller != null ? controller.NeedsReviewCount : 0)
-                                    + " cell(s) that need review before saving.";
-
-            // Plan 09-05 flips these base-enabled states on per the provenance pattern-match; until then
-            // they are disabled. The NeedsReview gate further forces them off + surfaces the tooltip.
-            ApplyNeedsReviewGate(miSaveInPlace, false, blockedByCascade, cascadeTooltip);
-            ApplyNeedsReviewGate(miSaveLooseOverride, false, blockedByCascade, cascadeTooltip);
-            ApplyNeedsReviewGate(miSaveAs, false, blockedByCascade, cascadeTooltip);
-            ApplyNeedsReviewGate(miPatchLive, false, blockedByCascade, cascadeTooltip);
-            ApplyNeedsReviewGate(miRepackTre, false, blockedByCascade, cascadeTooltip);
-
             bool hasDoc = dtDocument != null;
-            btnSave.Enabled = hasDoc && !blockedByCascade && false; // 09-05 composes the real enable here
-        }
+            bool blockedByCascade = controller != null && controller.NeedsReviewCount > 0;
+            string cascadeTooltip = blockedByCascade
+                ? ("Resolve " + controller.NeedsReviewCount + " cell(s) that need review before saving.")
+                : null;
 
-        // Applies the per-item NeedsReview gate: the item is enabled only when its base-enabled state is
-        // true AND no cascade is blocking; when blocked, the locked R-04 tooltip is surfaced on the item.
-        private static void ApplyNeedsReviewGate(ToolStripMenuItem item, bool baseEnabled, bool blockedByCascade, string cascadeTooltip)
-        {
-            if (item == null) return;
-            item.Enabled = baseEnabled && !blockedByCascade;
-            if (blockedByCascade)
+            bool isLooseFile = Source is OpenSource.LooseFile;
+            bool isTreArchive = Source is OpenSource.TreArchive;
+            bool isUnknown = Source is OpenSource.Unknown;
+
+            if (miSaveInPlace != null)
             {
-                item.ToolTipText = cascadeTooltip;
+                miSaveInPlace.Enabled = hasDoc && isLooseFile && !blockedByCascade && !saveInFlight;
+                miSaveInPlace.ToolTipText = blockedByCascade
+                    ? cascadeTooltip
+                    : (isLooseFile ? "" : "Cannot save in place — file came from .tre or unknown source. Use Save as loose override or Save As.");
             }
+            if (miSaveLooseOverride != null)
+            {
+                miSaveLooseOverride.Enabled = hasDoc && (isLooseFile || isTreArchive) && !blockedByCascade && !saveInFlight;
+                miSaveLooseOverride.ToolTipText = blockedByCascade
+                    ? cascadeTooltip
+                    : ((isLooseFile || isTreArchive) ? "" : "Cannot resolve archive record — use Save As to write to a chosen file.");
+            }
+            if (miSaveAs != null)
+            {
+                // ALWAYS enabled (escape hatch — round-2 MEDIUM 5) unless a cascade blocks.
+                miSaveAs.Enabled = hasDoc && !blockedByCascade && !saveInFlight;
+                miSaveAs.ToolTipText = blockedByCascade ? cascadeTooltip : "Save the current edits to a path you choose.";
+            }
+            if (miPatchLive != null)
+            {
+                miPatchLive.Enabled = false; // CF-03 — disabled inherited.
+                miPatchLive.ToolTipText = "Live patch requires opening from client memory — not wired in this phase.";
+            }
+            if (miRepackTre != null)
+            {
+                miRepackTre.Enabled = hasDoc && isTreArchive && !blockedByCascade && !saveInFlight;
+                miRepackTre.ToolTipText = blockedByCascade
+                    ? cascadeTooltip
+                    : (isTreArchive ? "" : "Open from a packed .tre to repack the source archive.");
+            }
+
+            btnSave.Enabled = hasDoc && !blockedByCascade && !saveInFlight && (isLooseFile || isTreArchive || isUnknown);
         }
 
         private void OnSaveButtonClick(object sender, EventArgs e)
         {
-            // Save▾ ships disabled in Plan 09-03; this is reachable only if a later plan enables the
-            // button. Anchor the drop-down at the bottom of the Save button for that future wiring.
+            // Plan 09-05: anchor the Save▾ drop-down at the bottom of the Save button.
             if (saveMenu == null) return;
             saveMenu.Show(btnSave, new Point(0, btnSave.Height));
+        }
+
+        // ── Save▾ click handlers (Plan 09-05) ────────────────────────────────
+        //
+        // Each handler builds DTII bytes via DatatableSaveTargets (the < 100-line composition shim
+        // over Phase 8's IffSaveTargets / TreRepackSaveTarget) and, on success, calls
+        // controller.MarkSaved() (the Plan 09-04 seam — iter-2 item 8) to reset the dirty baseline +
+        // clear the ● glyph, then routes the reload via ClientReloadDispatcher.Dispatch.
+
+        private async void OnSaveInPlaceClick(object sender, EventArgs e)
+        {
+            if (dtDocument == null) return;
+            if (!(Source is OpenSource.LooseFile))
+            {
+                SetSaveFailure("Cannot save in place — file came from .tre or unknown source. Use Save as loose override or Save As.");
+                return;
+            }
+            await DoFileSaveAsync(() => DatatableSaveTargets.SaveInPlace(dtDocument.Mutable, Source), "in place");
+        }
+
+        private async void OnSaveLooseOverrideClick(object sender, EventArgs e)
+        {
+            if (dtDocument == null) return;
+            string clientRoot = ResolveClientRoot();
+            if (string.IsNullOrEmpty(clientRoot))
+            {
+                SetSaveFailure("Could not locate the client root — use Save As… and we'll remember the directory.");
+                return;
+            }
+            string subDir = ini.GetString("DatatableEditor", "looseOverrideDir");
+            if (string.IsNullOrEmpty(subDir))
+            {
+                // Phase 8 Open Q2 user-picks-path-on-first-save posture: best-guess default subdir +
+                // a one-time hint so the user knows where the override landed and how to change it.
+                subDir = "loose";
+                lblStatus.Text = "Saving to " + subDir
+                    + ". Change the loose-override directory in [DatatableEditor] looseOverrideDir if needed.";
+                lblStatus.ForeColor = Colors.Font();
+            }
+            await DoFileSaveAsync(
+                () => DatatableSaveTargets.SaveLooseOverride(dtDocument.Mutable, Source, clientRoot, subDir),
+                "loose override");
+        }
+
+        private async void OnSaveAsClick(object sender, EventArgs e)
+        {
+            if (dtDocument == null) return;
+            using (var sfd = new SaveFileDialog())
+            {
+                sfd.Title = "Save datatable as…";
+                sfd.Filter = "Datatable files (*.tab)|*.tab|All files (*.*)|*.*";
+                sfd.FileName = !string.IsNullOrEmpty(displayName) ? displayName : "untitled.tab";
+                if (sfd.ShowDialog(this) != DialogResult.OK) return;
+                string path = sfd.FileName;
+                await DoFileSaveAsync(() => DatatableSaveTargets.SaveToPath(dtDocument.Mutable, path), "save-as");
+            }
+        }
+
+        // CF-03: Mode 3 (in-memory live patch) is DISABLED in Phase 9. The menu item ships disabled
+        // with the inherited tooltip; this handler is defensive (reachable only if the item were
+        // somehow enabled) — no-op with the honest copy.
+        private void OnPatchLiveClientClick(object sender, EventArgs e)
+        {
+            SetSaveFailure("Live patch is disabled in this phase.");
+        }
+
+        private async void OnRepackTreClick(object sender, EventArgs e)
+        {
+            if (dtDocument == null) return;
+            var ta = Source as OpenSource.TreArchive;
+            if (ta == null)
+            {
+                // Defensive — the item should be disabled in this state.
+                SetSaveFailure("Open from a packed .tre to repack the source archive.");
+                return;
+            }
+
+            string archiveName = Path.GetFileName(ta.TrePath ?? "");
+            bool backupRequested;
+            using (var dlg = new FormSaveConfirmDialog(
+                heading: "Repack " + archiveName + "?",
+                body: "This rewrites the entire " + archiveName + " archive on disk and replaces it "
+                    + "atomically. Untouched entries are preserved byte-for-byte; only the edited entry "
+                    + "recompresses. If the client holds the archive open, the repack is refused without "
+                    + "a partial-write. Continue?",
+                acceptVerb: "Repack",
+                cancelVerb: "Cancel",
+                showBackupCheckbox: true,
+                backupCheckboxLabel: "Create a timestamped backup (" + archiveName + ".<yyyyMMdd-HHmmss>.bak) first"))
+            {
+                dlg.ShowDialog(this);
+                if (dlg.Outcome != FormSaveConfirmDialog.ConfirmOutcome.Accepted) return;
+                backupRequested = dlg.BackupRequested;
+            }
+
+            saveInFlight = true;
+            RefreshSaveMenuEnabledState();
+            RefreshReloadButtonState();
+            lblStatus.Text = "Saving (repack " + archiveName + ")…";
+            lblStatus.ForeColor = Colors.Font();
+
+            TreRepackSaveTarget.TreRepackResult result;
+            try
+            {
+                result = await DatatableSaveTargets.RepackIntoSourceTre(dtDocument.Mutable, ta, backupRequested)
+                    .ConfigureAwait(true);
+            }
+            catch (Exception ex)
+            {
+                SetSaveFailure("Repack failed: " + ex.Message + " Your edits are kept in the editor.");
+                saveInFlight = false;
+                RefreshSaveMenuEnabledState();
+                RefreshReloadButtonState();
+                return;
+            }
+
+            saveInFlight = false;
+
+            switch (result)
+            {
+                case TreRepackSaveTarget.TreRepackResult.Replaced:
+                case TreRepackSaveTarget.TreRepackResult.BackedUpThenReplaced:
+                    lastSavedPath = ta.TrePath;
+                    lblStatus.Text = result == TreRepackSaveTarget.TreRepackResult.BackedUpThenReplaced
+                        ? "Repacked " + archiveName + " (backup created)"
+                        : "Repacked " + archiveName;
+                    lblStatus.ForeColor = Colors.Font();
+                    if (controller != null) controller.MarkSaved();
+                    DispatchReload(lastSavedPath);
+                    break;
+
+                case TreRepackSaveTarget.TreRepackResult.RefusedClientHoldsArchive_LooseOverrideRecommended:
+                    // No MarkSaved — nothing was written.
+                    lblStatus.Text = "Client holds the archive — try Save as loose override instead.";
+                    lblStatus.ForeColor = Color.Red;
+                    break;
+
+                case TreRepackSaveTarget.TreRepackResult.Failed:
+                default:
+                    // The Failed outcome also covers the Phase 8 WR-06 V6000 enumerate-only refusal
+                    // (TreWriter.Repack throws NotSupportedException → save target returns Failed).
+                    lblStatus.Text = "Repack failed — your edits are retained. If this is a V6000 (encrypted) archive, use Save as loose override.";
+                    lblStatus.ForeColor = Color.Red;
+                    break;
+            }
+
+            RefreshSaveMenuEnabledState();
+            RefreshReloadButtonState();
+        }
+
+        // Shared file-save orchestration (modes 1/2/3): set the saveInFlight barrier (disables Save▾ +
+        // Reload while the Task is in flight — MEDIUM-9), surface the Saving/Saved/Save-failed copy,
+        // and on success call controller.MarkSaved() + route the reload dispatch.
+        private async Task<bool> DoFileSaveAsync(
+            Func<Task<IffSaveTargets.SaveResult>> saveOp,
+            string modeLabel)
+        {
+            saveInFlight = true;
+            RefreshSaveMenuEnabledState();
+            RefreshReloadButtonState();
+            lblStatus.Text = "Saving (" + modeLabel + ")…";
+            lblStatus.ForeColor = Colors.Font();
+
+            IffSaveTargets.SaveResult result;
+            try
+            {
+                result = await saveOp().ConfigureAwait(true);
+            }
+            catch (Exception ex)
+            {
+                result = IffSaveTargets.SaveResult.Failure(ex.Message);
+            }
+
+            saveInFlight = false;
+
+            if (result.Ok)
+            {
+                lblStatus.Text = "Saved " + (displayName ?? Path.GetFileName(result.Path) ?? "<untitled>") + " (" + modeLabel + ")";
+                lblStatus.ForeColor = Colors.Font();
+                lastSavedPath = result.Path;
+                // iter-2 item 8: reset the dirty baseline + clear the ● glyph (MarkSaved raises
+                // EditApplied → OnEditApplied → UpdateDirtyVisuals).
+                if (controller != null) controller.MarkSaved();
+                DispatchReload(result.Path);
+            }
+            else
+            {
+                lblStatus.Text = (result.Message ?? "Save failed.") + " Your edits are kept in the editor — try another save target.";
+                lblStatus.ForeColor = Color.Red;
+            }
+            RefreshSaveMenuEnabledState();
+            RefreshReloadButtonState();
+            return result.Ok;
+        }
+
+        private void SetSaveFailure(string message)
+        {
+            lblStatus.Text = message;
+            lblStatus.ForeColor = Color.Red;
+        }
+
+        // Routes the just-saved DTII asset through Phase 8's tiered reload dispatcher. The DTII case
+        // classifies as PendingNextSceneChange (tier-(b) per CF-05); the dispatch is for the routing-
+        // table audit trail — the user-facing reload copy stays the locked CF-05 wording (OnReloadClicked).
+        private void DispatchReload(string savedPath)
+        {
+            if (string.IsNullOrEmpty(savedPath)) return;
+            try
+            {
+                ClientReloadDispatcher.Dispatch(savedPath, "DTII");
+            }
+            catch
+            {
+                // Dispatch gates on Game.IsRunning internally; never let a binding hiccup tear down
+                // the save-success path.
+            }
+        }
+
+        // ── Public entry points (Plan 09-05 D-10.2 / D-10.3 hand-offs) ───────
+
+        /// <summary>
+        /// TRE Browser hand-off (D-10.2). Reads the resolved payload as a typed datatable and binds it
+        /// with TreArchive (or Unknown on degraded resolve) provenance — mirrors
+        /// <c>FormIffEditor.OpenFromTreEntry</c> with the typed wrap swapped in.
+        /// </summary>
+        public void OpenFromTreEntry(byte[] payload, string resolvedArchivePath, string logicalPath, long archiveLocalOffset)
+        {
+            if (payload == null)
+            {
+                SetSaveFailure("TRE entry has no payload to open.");
+                return;
+            }
+            try
+            {
+                IffDocument iff;
+                using (var ms = new MemoryStream(payload, writable: false))
+                {
+                    iff = IffReader.Read(ms);
+                }
+                MutableIffDocument mIff = MutableIffDocument.FromDocument(iff, payload);
+                DataTableDocument dtDoc = DataTableDocument.FromIff(mIff);
+                OpenSource src = TreRecordIndexResolver.ResolveOrUnknown(resolvedArchivePath, archiveLocalOffset, logicalPath);
+                string name = logicalPath != null ? Path.GetFileName(logicalPath) : Path.GetFileName(resolvedArchivePath ?? "");
+                LoadDocument(dtDoc, src, name);
+                if (src is OpenSource.TreArchive)
+                {
+                    lblStatus.Text = "Opened " + name + " from " + Path.GetFileName(resolvedArchivePath ?? "");
+                    lblStatus.ForeColor = Colors.Font();
+                }
+                else
+                {
+                    lblStatus.Text = "Opened " + name + " — record index unresolved; use Save As to write to a chosen file.";
+                    lblStatus.ForeColor = Colors.Font();
+                }
+            }
+            catch (Exception ex)
+            {
+                SetSaveFailure("TRE hand-off failed: " + ex.Message);
+            }
+        }
+
+        /// <summary>
+        /// IFF Editor hand-off (D-10.3). Wraps the IFF Editor's in-memory <see cref="MutableIffDocument"/>
+        /// as a typed datatable WITHOUT re-parsing bytes (efficient hand-off — the IFF Editor passes its
+        /// existing mutable doc + Source directly).
+        /// </summary>
+        public void OpenFromMutableIff(MutableIffDocument mutIff, OpenSource source, string displayName)
+        {
+            if (mutIff == null)
+            {
+                SetSaveFailure("IFF hand-off has no document to open.");
+                return;
+            }
+            try
+            {
+                DataTableDocument dtDoc = DataTableDocument.FromIff(mutIff);
+                LoadDocument(dtDoc, source ?? OpenSource.Unknown.Instance, displayName);
+                lblStatus.Text = "Opened " + (displayName ?? "datatable") + " (typed view)";
+                lblStatus.ForeColor = Colors.Font();
+            }
+            catch (Exception ex)
+            {
+                SetSaveFailure("Could not switch to the typed datatable view: " + ex.Message);
+            }
+        }
+
+        // Resolves the client install root (process-module primary, then GetWorkingDirectory(), then
+        // the [TreBrowser] clientDir ini fallback) — mirrors FormIffEditor.ResolveClientRoot.
+        private string ResolveClientRoot()
+        {
+            try
+            {
+                string exe = System.Diagnostics.Process.GetCurrentProcess().MainModule.FileName;
+                string moduleDir = Path.GetDirectoryName(exe);
+                if (!string.IsNullOrEmpty(moduleDir) && Directory.Exists(moduleDir)) return moduleDir;
+            }
+            catch { /* fall through */ }
+            try
+            {
+                string wd = UtinniCore.Utility.utility.GetWorkingDirectory();
+                if (!string.IsNullOrEmpty(wd) && Directory.Exists(wd)) return wd;
+            }
+            catch { /* binding unavailable outside a live client */ }
+            try
+            {
+                string configured = ini.GetString("TreBrowser", "clientDir");
+                if (!string.IsNullOrEmpty(configured) && Directory.Exists(configured)) return configured;
+            }
+            catch { /* ini may not have the key yet */ }
+            return null;
+        }
+
+        // Reload-button state: disabled while a save Task is in flight (MEDIUM-9). Otherwise the button
+        // stays clickable — OnReloadClicked surfaces the CF-05 locked copy regardless of live-client.
+        private void RefreshReloadButtonState()
+        {
+            btnReload.Enabled = !saveInFlight;
         }
 
         // ── Dirty visuals + counters ─────────────────────────────────────────
@@ -879,8 +1224,24 @@ namespace TJT.UI.Forms
 
         private void OnReloadClicked(object sender, EventArgs e)
         {
-            // CF-05 LOCKED: datatables re-resolve only on the next scene change. DO NOT call any
-            // reload binding (RESEARCH § Anti-Patterns Pitfall 10 + CF-05 lock).
+            // CF-05 LOCKED: datatables re-resolve only on the next scene change. The user-facing copy
+            // STAYS this locked wording (RESEARCH § Anti-Patterns Pitfall 10 + CF-05 lock).
+            //
+            // Plan 09-05: when a save has happened this session, delegate to ClientReloadDispatcher.
+            // Dispatch for the routing-table audit trail — it routes the DTII case to
+            // PendingNextSceneChange anyway (no fresh binding call, no scene-setup trigger). If
+            // nothing has been saved yet (lastSavedPath == null), keep the candor copy unchanged.
+            if (!string.IsNullOrEmpty(lastSavedPath))
+            {
+                bool clientUp = false;
+                try { clientUp = Game.IsRunning; }
+                catch { clientUp = false; }
+                if (clientUp)
+                {
+                    DispatchReload(lastSavedPath);
+                }
+            }
+
             lblStatus.Text = "Datatables re-resolve on the next scene change. Trigger one via TJT's chat-command load.";
             lblStatus.ForeColor = Colors.Font();
 

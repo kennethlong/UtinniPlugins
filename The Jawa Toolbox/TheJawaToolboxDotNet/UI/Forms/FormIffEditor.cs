@@ -229,6 +229,7 @@ namespace TJT.UI.Forms
             UpdateDirtyVisuals();
             RefreshSaveMenuEnabledState();
             RefreshReloadButtonState();
+            RefreshSwitchMenuVisibility(); // 09-05 D-10.3
         }
 
         private void CreateSettings()
@@ -657,6 +658,7 @@ namespace TJT.UI.Forms
         private ToolStripMenuItem miDuplicate;
         private ToolStripMenuItem miMoveUp;
         private ToolStripMenuItem miMoveDown;
+        private ToolStripMenuItem miSwitchToDatatableView; // 09-05 D-10.3 — hand-off to the Datatable Editor
 
         private void BuildTreeContextMenu()
         {
@@ -669,10 +671,16 @@ namespace TJT.UI.Forms
             miDuplicate = new ToolStripMenuItem("Duplicate");            miDuplicate.Click += OnDuplicate;
             miMoveUp = new ToolStripMenuItem("Move up");                 miMoveUp.Click += OnMoveUp;
             miMoveDown = new ToolStripMenuItem("Move down");             miMoveDown.Click += OnMoveDown;
+            // 09-05 D-10.3: manual hand-off to the typed Datatable Editor — visible only when the
+            // loaded document's root TypeId is "DTII". NOT auto-route (the user keeps both windows).
+            miSwitchToDatatableView = new ToolStripMenuItem("Switch to typed datatable view");
+            miSwitchToDatatableView.Click += OnSwitchToDatatableViewClick;
             treeContextMenu.Items.AddRange(new ToolStripItem[] {
                 miAddChunk, miAddForm, miRemove, miRenameRetag, miEditFormSubType,
                 new ToolStripSeparator(),
-                miDuplicate, miMoveUp, miMoveDown
+                miDuplicate, miMoveUp, miMoveDown,
+                new ToolStripSeparator(),
+                miSwitchToDatatableView
             });
             treeContextMenu.Opening += OnTreeContextMenuOpening;
             iffChunkTree.StructuralOpMenu = treeContextMenu;
@@ -695,7 +703,19 @@ namespace TJT.UI.Forms
             miMoveDown.Enabled = hasNode && !isRoot
                 && IndexOfNodeAmongSiblings(node) < node.Parent.Children.Count - 1;
 
+            // 09-05 D-10.3: the Switch item is visible only when the loaded document is a DTII carrier.
+            RefreshSwitchMenuVisibility();
+
             if (!hasNode) e.Cancel = true;
+        }
+
+        // 09-05 D-10.3: drive the Switch-to-typed-datatable-view item visibility off the loaded
+        // document's root TypeId. Called on the context-menu Opening event and after LoadDocument.
+        private void RefreshSwitchMenuVisibility()
+        {
+            if (miSwitchToDatatableView == null) return;
+            miSwitchToDatatableView.Visible =
+                document != null && document.Root != null && document.Root.TypeId == "DTII";
         }
 
         private static int IndexOfNodeAmongSiblings(MutableIffNode node)
@@ -1565,6 +1585,37 @@ namespace TJT.UI.Forms
         // ─────────────────────────────────────────────────────────────────────
         // Persistence — best-effort; never block close.
         // ─────────────────────────────────────────────────────────────────────
+
+        // 09-05 D-10.3: hand the in-memory MutableIffDocument + Source directly to the Datatable
+        // Editor (no re-parse — OpenFromMutableIff wraps via DataTableDocument.FromIff). Manual
+        // hand-off: this IFF Editor stays open so the user can switch back.
+        private void OnSwitchToDatatableViewClick(object sender, EventArgs e)
+        {
+            if (document == null) return;
+            FormDatatableEditor editor = FindOrCreateDatatableEditor();
+            if (editor == null)
+            {
+                lblStatus.Text = "Datatable Editor is unavailable.";
+                lblStatus.ForeColor = Color.Red;
+                return;
+            }
+            editor.OpenFromMutableIff(this.document, this.Source, this.displayName);
+            editor.Show();
+            editor.Activate();
+        }
+
+        // Find the FormDatatableEditor instance the plugin registered in GetForms() and return it.
+        // Mirrors FormTreBrowser.FindOrCreateDatatableEditor (both forms talk to the plugin's
+        // GetForms list; the small duplication is the accepted V1 posture — V2 refactor candidate).
+        private FormDatatableEditor FindOrCreateDatatableEditor()
+        {
+            foreach (IEditorForm f in editorPlugin.GetForms())
+            {
+                FormDatatableEditor editor = f as FormDatatableEditor;
+                if (editor != null) return editor;
+            }
+            return null;
+        }
 
         private void FormIffEditor_FormClosing(object sender, FormClosingEventArgs e)
         {

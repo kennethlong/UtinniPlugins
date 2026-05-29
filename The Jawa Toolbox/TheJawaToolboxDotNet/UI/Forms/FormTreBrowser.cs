@@ -59,6 +59,7 @@ namespace TJT.UI.Forms
         private TreDetailPane _detail;          // right-region detail pane (07-03)
         private UtinniContextMenuStrip _tvTreContextMenu;  // 08-05 Task 4 — Open in IFF Editor
         private ToolStripMenuItem _miOpenInIffEditor;       // 08-05 Task 4
+        private ToolStripMenuItem _miOpenInDatatableEditor; // 09-05 D-10.2 — Open in Datatable Editor
 
         public FormTreBrowser(IEditorPlugin editorPlugin)
         {
@@ -144,6 +145,12 @@ namespace TJT.UI.Forms
             _miOpenInIffEditor = new ToolStripMenuItem("Open in IFF Editor");
             _miOpenInIffEditor.Click += OnOpenInIffEditor;
             _tvTreContextMenu.Items.Add(_miOpenInIffEditor);
+            // 09-05 D-10.2: Open in Datatable Editor — HIDDEN unless the selected entry is a .tab
+            // (extension-only visibility ships V1; the DTII-in-non-.tab corner case is reachable via
+            // Open in IFF Editor → Switch to typed datatable view, flagged in the 09-07 smoke).
+            _miOpenInDatatableEditor = new ToolStripMenuItem("Open in Datatable Editor");
+            _miOpenInDatatableEditor.Click += OnOpenInDatatableEditor;
+            _tvTreContextMenu.Items.Add(_miOpenInDatatableEditor);
             _tvTreContextMenu.Opening += OnTvTreContextMenuOpening;
             tvTre.ContextMenuStrip = _tvTreContextMenu;
             // Right-click should select the underlying node so the menu's logic targets it.
@@ -180,6 +187,13 @@ namespace TJT.UI.Forms
             _miOpenInIffEditor.ToolTipText = d.EnumerateOnly
                 ? "Payload is enumerate-only — cannot open in IFF Editor."
                 : "Opens this entry in the IFF Editor with TRE provenance.";
+
+            // 09-05 D-10.2: HIDE (not just disable) the Datatable-Editor item unless the entry is a
+            // .tab AND its payload is resolvable (enumerate-only payloads can't be opened). Extension-
+            // only visibility per the V1 hand-off shape (iter-2 LOW).
+            bool isTab = string.Equals(Path.GetExtension(pn.FullPath ?? ""), ".tab", StringComparison.OrdinalIgnoreCase);
+            _miOpenInDatatableEditor.Visible = isTab && !d.EnumerateOnly;
+            _miOpenInDatatableEditor.ToolTipText = "Opens this datatable in the typed Datatable Editor with TRE provenance.";
         }
 
         private void OnOpenInIffEditor(object sender, EventArgs e)
@@ -242,6 +256,75 @@ namespace TJT.UI.Forms
             foreach (IEditorForm f in editorPlugin.GetForms())
             {
                 FormIffEditor editor = f as FormIffEditor;
+                if (editor != null) return editor;
+            }
+            return null;
+        }
+
+        // 09-05 D-10.2 — TRE Browser hand-off to the Datatable Editor. Mirrors OnOpenInIffEditor
+        // verbatim (off-UI-thread payload resolve → BeginInvoke marshal → FindOrCreate →
+        // OpenFromTreEntry). The visibility predicate (extension == ".tab") is enforced on the
+        // context-menu Opening event so this handler only fires for .tab entries.
+        private void OnOpenInDatatableEditor(object sender, EventArgs e)
+        {
+            PathNode pn = tvTre.SelectedNode != null ? tvTre.SelectedNode.Tag as PathNode : null;
+            if (pn == null || !pn.IsLeaf) return;
+            TreEntryDescriptor d;
+            if (_index == null || !_index.TryGetDescriptor(pn.FullPath, out d)) return;
+            TreEntryDescriptor descriptor = d;
+            string logicalPath = pn.FullPath;
+            Task.Run(() =>
+            {
+                try
+                {
+                    byte[] payload;
+                    bool ok = TrePayloadResolver.TryResolve(descriptor, out payload);
+                    if (!IsHandleCreated) return;
+                    BeginInvoke((Action)(() =>
+                    {
+                        if (!ok)
+                        {
+                            lblStatus.Text = "Cannot open " + logicalPath + " — payload is enumerate-only.";
+                            return;
+                        }
+                        FormDatatableEditor editor = FindOrCreateDatatableEditor();
+                        if (editor == null)
+                        {
+                            lblStatus.Text = "Datatable Editor is unavailable in this session.";
+                            return;
+                        }
+                        editor.OpenFromTreEntry(
+                            payload,
+                            descriptor.ResolvedArchivePath,
+                            logicalPath,
+                            descriptor.ArchiveLocalOffset);
+                        editor.Show();
+                        editor.Activate();
+                    }));
+                }
+                catch (Exception ex)
+                {
+                    if (IsHandleCreated)
+                    {
+                        BeginInvoke((Action)(() =>
+                        {
+                            lblStatus.Text = "Open-in-Datatable-Editor failed: " + ex.Message;
+                            lblStatus.ForeColor = Color.Red;
+                        }));
+                    }
+                }
+            });
+        }
+
+        // Find the FormDatatableEditor instance the plugin registered in GetForms() and return it.
+        // Returns null if the editor failed to load (Plugin.cs registration sits inside a try/catch).
+        // Mirrors FindOrCreateIffEditor (the small duplication is acceptable — both forms talk to the
+        // plugin's GetForms list; V2 refactor candidate per 09-05-PLAN behavior note).
+        private FormDatatableEditor FindOrCreateDatatableEditor()
+        {
+            foreach (IEditorForm f in editorPlugin.GetForms())
+            {
+                FormDatatableEditor editor = f as FormDatatableEditor;
                 if (editor != null) return editor;
             }
             return null;

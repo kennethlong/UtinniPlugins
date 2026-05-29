@@ -719,7 +719,16 @@ namespace TJT.UI.Forms
             if (sel == null || sel.Kind != MutableIffNodeKind.Container) return;
             string tag = PromptFourCc("New chunk tag", "DATA");
             if (tag == null) return;
-            controller.Apply(IffEditCommands.AddLeaf(sel, tag, new byte[0]));
+            // 08-REVIEW WR-01: MutableIffNode.NewLeaf throws ArgumentException for non-printable-ASCII
+            // FourCCs (the FormFourCcDialog only enforces length, not content). Surface the validation
+            // failure into the status strip instead of letting it escape to the WinForms unhandled-
+            // exception handler. InvalidOperationException covers parent-kind / cross-boundary cases.
+            try
+            {
+                controller.Apply(IffEditCommands.AddLeaf(sel, tag, new byte[0]));
+            }
+            catch (ArgumentException ex) { SurfaceStructuralOpError(ex.Message); }
+            catch (InvalidOperationException ex) { SurfaceStructuralOpError(ex.Message); }
         }
 
         private void OnAddForm(object sender, EventArgs e)
@@ -728,14 +737,27 @@ namespace TJT.UI.Forms
             if (sel == null || sel.Kind != MutableIffNodeKind.Container) return;
             string sub = PromptFourCc("New FORM sub-type", "NEWS");
             if (sub == null) return;
-            controller.Apply(IffEditCommands.AddContainer(sel, "FORM", sub));
+            // 08-REVIEW WR-01: see OnAddChunk — same ArgumentException surface from FourCC validation.
+            try
+            {
+                controller.Apply(IffEditCommands.AddContainer(sel, "FORM", sub));
+            }
+            catch (ArgumentException ex) { SurfaceStructuralOpError(ex.Message); }
+            catch (InvalidOperationException ex) { SurfaceStructuralOpError(ex.Message); }
         }
 
         private void OnRemove(object sender, EventArgs e)
         {
             var sel = SelectedNode();
             if (sel == null || sel.Parent == null) return;
-            controller.Apply(IffEditCommands.Remove(sel));
+            // 08-REVIEW WR-01: Remove does not validate FourCC, but the controller can still surface
+            // InvalidOperationException from edge cases (e.g. root removal slipping past the gate).
+            try
+            {
+                controller.Apply(IffEditCommands.Remove(sel));
+            }
+            catch (ArgumentException ex) { SurfaceStructuralOpError(ex.Message); }
+            catch (InvalidOperationException ex) { SurfaceStructuralOpError(ex.Message); }
         }
 
         private void OnRenameRetag(object sender, EventArgs e)
@@ -744,15 +766,14 @@ namespace TJT.UI.Forms
             if (sel == null) return;
             string tag = PromptFourCc("Rename / retag", sel.TypeId);
             if (tag == null) return;
+            // 08-REVIEW WR-01: TypeId setter throws ArgumentException for non-printable-ASCII AND
+            // InvalidOperationException for cross-boundary retag — catch both.
             try
             {
                 controller.Apply(IffEditCommands.RenameRetag(sel, tag));
             }
-            catch (InvalidOperationException ex)
-            {
-                lblStatus.Text = ex.Message;
-                lblStatus.ForeColor = Color.Red;
-            }
+            catch (ArgumentException ex) { SurfaceStructuralOpError(ex.Message); }
+            catch (InvalidOperationException ex) { SurfaceStructuralOpError(ex.Message); }
         }
 
         private void OnEditFormSubType(object sender, EventArgs e)
@@ -761,28 +782,59 @@ namespace TJT.UI.Forms
             if (sel == null || sel.Kind != MutableIffNodeKind.Container) return;
             string sub = PromptFourCc("Edit FORM sub-type", sel.SubTypeId);
             if (sub == null) return;
-            controller.Apply(IffEditCommands.EditFormSubType(sel, sub));
+            // 08-REVIEW WR-01: SubTypeId setter throws ArgumentException for non-printable-ASCII.
+            try
+            {
+                controller.Apply(IffEditCommands.EditFormSubType(sel, sub));
+            }
+            catch (ArgumentException ex) { SurfaceStructuralOpError(ex.Message); }
+            catch (InvalidOperationException ex) { SurfaceStructuralOpError(ex.Message); }
         }
 
         private void OnDuplicate(object sender, EventArgs e)
         {
             var sel = SelectedNode();
             if (sel == null || sel.Parent == null) return;
-            controller.Apply(IffEditCommands.Duplicate(sel));
+            try
+            {
+                controller.Apply(IffEditCommands.Duplicate(sel));
+            }
+            catch (ArgumentException ex) { SurfaceStructuralOpError(ex.Message); }
+            catch (InvalidOperationException ex) { SurfaceStructuralOpError(ex.Message); }
         }
 
         private void OnMoveUp(object sender, EventArgs e)
         {
             var sel = SelectedNode();
             if (sel == null || sel.Parent == null) return;
-            controller.Apply(IffEditCommands.MoveUp(sel));
+            try
+            {
+                controller.Apply(IffEditCommands.MoveUp(sel));
+            }
+            catch (ArgumentException ex) { SurfaceStructuralOpError(ex.Message); }
+            catch (InvalidOperationException ex) { SurfaceStructuralOpError(ex.Message); }
         }
 
         private void OnMoveDown(object sender, EventArgs e)
         {
             var sel = SelectedNode();
             if (sel == null || sel.Parent == null) return;
-            controller.Apply(IffEditCommands.MoveDown(sel));
+            try
+            {
+                controller.Apply(IffEditCommands.MoveDown(sel));
+            }
+            catch (ArgumentException ex) { SurfaceStructuralOpError(ex.Message); }
+            catch (InvalidOperationException ex) { SurfaceStructuralOpError(ex.Message); }
+        }
+
+        // 08-REVIEW WR-01: shared status-strip surface for structural-op validation failures so
+        // ArgumentException / InvalidOperationException from MutableIffNode never escape to the
+        // WinForms unhandled-exception path (which would pop the JIT debugger). Mirrors the prior
+        // inline pattern used by OnRenameRetag (now consolidated).
+        private void SurfaceStructuralOpError(string message)
+        {
+            lblStatus.Text = message;
+            lblStatus.ForeColor = Color.Red;
         }
 
         // Prompts the user for a 4-character FourCC via FormFourCcDialog. Returns null if the

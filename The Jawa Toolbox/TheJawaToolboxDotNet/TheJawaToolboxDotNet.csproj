@@ -96,11 +96,19 @@
     <Compile Include="UI\Forms\FormSaveConfirmDialog.Designer.cs">
       <DependentUpon>FormSaveConfirmDialog.cs</DependentUpon>
     </Compile>
+    <Compile Include="UI\Controls\DatatableColumnFactory.cs" />
+    <Compile Include="UI\Controls\DatatableHashStringEditor.cs" />
+    <Compile Include="UI\Controls\DatatableNumericUpDownEditingControl.cs">
+      <SubType>Component</SubType>
+    </Compile>
     <Compile Include="UI\Controls\TreDetailPane.cs">
       <SubType>UserControl</SubType>
     </Compile>
     <Compile Include="UI\Controls\IffChunkTree.cs">
       <SubType>UserControl</SubType>
+    </Compile>
+    <Compile Include="UI\Controls\ThemedDataGridView.cs">
+      <SubType>Component</SubType>
     </Compile>
     <Compile Include="UI\Forms\FormSnapshotSaveAsDialog.cs">
       <SubType>Form</SubType>

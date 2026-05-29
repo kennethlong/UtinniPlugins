@@ -860,9 +860,13 @@ namespace TJT.UI.Forms
             miPatchLive.ToolTipText = "Live patch requires opening from client memory — not wired in this phase.";
             miPatchLive.Click += OnPatchLive;
             miRepackTre = new ToolStripMenuItem("Repack into source .tre…");
-            // 08-07 wires this — disabled placeholder for now.
+            // 08-07: provenance-gated on `Source is OpenSource.TreArchive ta`
+            // (08-REVIEWS HIGH-2). Default disabled; RefreshSaveMenuEnabledState
+            // flips it on when a TreArchive document is loaded. Honest tooltip
+            // wording mirrors the round-2 MEDIUM 5 disposition on Unknown.
             miRepackTre.Enabled = false;
-            miRepackTre.ToolTipText = "Not yet available — wired by a follow-up phase.";
+            miRepackTre.ToolTipText = "Open from a packed .tre to repack the source archive.";
+            miRepackTre.Click += OnRepackTre;
             saveMenu.Items.AddRange(new ToolStripItem[]
             {
                 miSaveInPlace, miSaveLooseOverride, miSaveAs,
@@ -941,9 +945,23 @@ namespace TJT.UI.Forms
             }
             if (miRepackTre != null)
             {
-                miRepackTre.ToolTipText = isUnknown
-                    ? unknownTooltip
-                    : "Not yet available — wired by a follow-up phase.";
+                // 08-07: provenance-gated on TreArchive (08-REVIEWS HIGH-2). Also gated on
+                // !inFlight (MEDIUM-9 stale-bytes reload race barrier) — the repack is the
+                // highest-risk save mode, so concurrent saves are explicitly serialized.
+                miRepackTre.Enabled = isTre && !inFlight;
+                if (isUnknown)
+                {
+                    miRepackTre.ToolTipText = unknownTooltip;
+                }
+                else if (isTre)
+                {
+                    miRepackTre.ToolTipText =
+                        "Repack the source .tre. Defaults to a timestamped backup; refuses cleanly if the client holds the archive open.";
+                }
+                else
+                {
+                    miRepackTre.ToolTipText = "Open from a packed .tre to repack the source archive.";
+                }
             }
             btnSave.Enabled = hasDoc;
         }
@@ -1106,6 +1124,143 @@ namespace TJT.UI.Forms
                     lblStatus.ForeColor = Color.Red;
                     break;
             }
+        }
+
+        // ── Repack into source .tre (08-07 / D-05.4) ────────────────────────
+        //
+        // Provenance-gated on `Source is OpenSource.TreArchive ta` (08-REVIEWS HIGH-2).
+        // Shows FormSaveConfirmDialog with the heading "Repack <archive>.tre?", the
+        // body explaining the full-rebuild + atomic-replace path, AND the opt-in
+        // "back up first" checkbox DEFAULTED ON (08-REVIEWS MEDIUM-10 — never
+        // overwrite a prior timestamped backup). On Accept, serializes via
+        // IffWriter.Write and calls TreRepackSaveTarget.Apply on a background Task.
+        //
+        // Result translation:
+        //   Replaced / BackedUpThenReplaced → success status + offer the tiered reload
+        //     (08-05 ClientReloadDispatcher); the lastSavedPath is set to the .tre so
+        //     the Reload button knows the asset to classify.
+        //   RefusedClientHoldsArchive_LooseOverrideRecommended → candid status copy
+        //     and pre-select the "Save as loose override" Save▾ item (do NOT auto-save —
+        //     the user must consent to the alternative save).
+        //   Failed → status "Repack failed — your edits are retained. See log."
+        private async void OnRepackTre(object sender, EventArgs e)
+        {
+            if (document == null) return;
+            var ta = Source as OpenSource.TreArchive;
+            if (ta == null)
+            {
+                // Defensive — the menu item should not have been enabled.
+                lblStatus.Text = "Open from a packed .tre to repack the source archive.";
+                lblStatus.ForeColor = Color.Red;
+                return;
+            }
+
+            string archiveName = Path.GetFileName(ta.TrePath ?? "");
+
+            // UI-SPEC §Destructive — heading, body, explicit verb captions. The
+            // FormSaveConfirmDialog renders the body in Color.Red as the documented
+            // destructive exception. Backup checkbox is shown AND defaulted on per
+            // 08-REVIEWS MEDIUM-10 (Assumption #5).
+            string heading = "Repack " + archiveName + "?";
+            string body = "This rewrites the entire " + archiveName + " archive on disk and "
+                        + "replaces it atomically. Untouched entries are preserved byte-for-byte; "
+                        + "only the edited entry recompresses. If the client holds the archive open, "
+                        + "the repack is refused without a partial-write. Continue?";
+
+            bool backupRequested;
+            using (var dlg = new FormSaveConfirmDialog(
+                heading: heading,
+                body: body,
+                acceptVerb: "Repack",
+                cancelVerb: "Cancel",
+                showBackupCheckbox: true,
+                backupCheckboxLabel: "Create a timestamped backup (" + archiveName + ".<yyyyMMdd-HHmmss>.bak) first"))
+            {
+                dlg.ShowDialog(this);
+                if (dlg.Outcome != FormSaveConfirmDialog.ConfirmOutcome.Accepted) return;
+                backupRequested = dlg.BackupRequested;
+            }
+
+            // Serialize the document. IffWriter.Write throws on over-cap chunks (08-01
+            // 64 MB cap) — surface as a save-time validation, not a crash.
+            byte[] rewritten;
+            try
+            {
+                rewritten = IffWriter.Write(document);
+            }
+            catch (Exception ex)
+            {
+                lblStatus.Text = "Repack failed (serialize): " + ex.Message + " Your edits are kept in the editor.";
+                lblStatus.ForeColor = Color.Red;
+                return;
+            }
+
+            saveInFlight = true;
+            RefreshSaveMenuEnabledState();
+            RefreshReloadButtonState();
+            lblStatus.Text = "Saving (repack " + archiveName + ")…";
+            lblStatus.ForeColor = Colors.Font();
+
+            TreRepackSaveTarget.TreRepackResult result;
+            try
+            {
+                result = await TreRepackSaveTarget.Apply(ta, rewritten, backupRequested).ConfigureAwait(true);
+            }
+            catch (Exception ex)
+            {
+                lblStatus.Text = "Repack failed: " + ex.Message + " Your edits are kept in the editor.";
+                lblStatus.ForeColor = Color.Red;
+                saveInFlight = false;
+                RefreshSaveMenuEnabledState();
+                RefreshReloadButtonState();
+                return;
+            }
+
+            saveInFlight = false;
+
+            switch (result)
+            {
+                case TreRepackSaveTarget.TreRepackResult.Replaced:
+                case TreRepackSaveTarget.TreRepackResult.BackedUpThenReplaced:
+                    // Success — the .tre on disk now contains the edit. lastSavedPath
+                    // is set to the .tre's PATH (not the logical-entry path) so the
+                    // Reload button feeds the .tre's extension to the classifier; the
+                    // tiered reload outcome (texture / terrain / pending / unavailable)
+                    // will reflect the asset kind of the .tre as a whole (typically
+                    // PendingNextSceneChange for a generic .tre — no in-session reload).
+                    lastSavedPath = ta.TrePath;
+                    string ok = result == TreRepackSaveTarget.TreRepackResult.BackedUpThenReplaced
+                        ? "Repacked " + archiveName + " (backup created)"
+                        : "Repacked " + archiveName;
+                    lblStatus.Text = ok;
+                    lblStatus.ForeColor = Colors.Font();
+                    break;
+
+                case TreRepackSaveTarget.TreRepackResult.RefusedClientHoldsArchive_LooseOverrideRecommended:
+                    // 08-REVIEWS MEDIUM-10 honest fallback. Pre-select the loose-override
+                    // save mode by anchoring the Save▾ drop-down with that item highlighted
+                    // — do NOT auto-save; the user must consent.
+                    lblStatus.Text = "The client appears to hold " + archiveName
+                        + " open. Save a loose override of the edited entry instead, or close the client and retry.";
+                    lblStatus.ForeColor = Color.Red;
+                    // Pre-select the loose-override save mode: show the menu with the
+                    // loose-override item as the default-highlighted choice.
+                    if (saveMenu != null && miSaveLooseOverride != null && miSaveLooseOverride.Enabled)
+                    {
+                        saveMenu.Show(btnSave, new Point(0, btnSave.Height));
+                        miSaveLooseOverride.Select();
+                    }
+                    break;
+
+                case TreRepackSaveTarget.TreRepackResult.Failed:
+                default:
+                    lblStatus.Text = "Repack failed — your edits are retained. See log.";
+                    lblStatus.ForeColor = Color.Red;
+                    break;
+            }
+
+            RefreshSaveMenuEnabledState();
+            RefreshReloadButtonState();
         }
 
         // Shared file-save orchestration: lock the toolbar Reload button while the save Task is

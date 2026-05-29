@@ -79,7 +79,15 @@ namespace TJT.Saving
         /// TypeId (DTII / SHOT / STOT / SBOT etc.); null otherwise.</param>
         public static ReloadTier Dispatch(string savedPath, string rootTypeIdOrNull)
         {
-            if (!Game.IsRunning)
+            // 08-REVIEW WR-05: Game.IsRunning is a P/Invoke read that can throw outside an injected
+            // client (no native binding bound, EngineGlobals not initialized, etc.). Every other
+            // call site in TJT wraps this in try/catch (FormIffEditor lines ~896/1450,
+            // LivePatchSaveTarget line ~136); mirror that defensive pattern here so an unhandled
+            // exception cannot tear down the caller (e.g. FormIffEditor.OnReloadClicked).
+            bool clientUp;
+            try { clientUp = Game.IsRunning; }
+            catch { clientUp = false; }
+            if (!clientUp)
             {
                 return ReloadTier.Unavailable;
             }

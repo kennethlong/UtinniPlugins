@@ -114,6 +114,12 @@
     <Compile Include="UI\Forms\FormTypeChangeCascadeDialog.Designer.cs">
       <DependentUpon>FormTypeChangeCascadeDialog.cs</DependentUpon>
     </Compile>
+    <Compile Include="UI\Forms\FormCsvImportPreviewDialog.cs">
+      <SubType>Form</SubType>
+    </Compile>
+    <Compile Include="UI\Forms\FormCsvImportPreviewDialog.Designer.cs">
+      <DependentUpon>FormCsvImportPreviewDialog.cs</DependentUpon>
+    </Compile>
     <Compile Include="UI\Controls\DatatableColumnFactory.cs" />
     <Compile Include="UI\Controls\DatatableHashStringEditor.cs" />
     <Compile Include="UI\Controls\DatatableNumericUpDownEditingControl.cs">
@@ -172,6 +178,7 @@
       <DependentUpon>ScenePanel.cs</DependentUpon>
     </Compile>
     <Compile Include="Saving\ClientReloadDispatcher.cs" />
+    <Compile Include="Saving\DatatableCsvSerializer.cs" />
     <Compile Include="Saving\DatatableSaveTargets.cs" />
     <Compile Include="Saving\IffSaveTargets.cs" />
     <Compile Include="Saving\LivePatchSaveTarget.cs" />

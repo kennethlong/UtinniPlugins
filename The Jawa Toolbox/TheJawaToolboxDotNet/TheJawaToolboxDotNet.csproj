@@ -84,6 +84,12 @@
     <Compile Include="UI\Forms\FormIffEditor.Designer.cs">
       <DependentUpon>FormIffEditor.cs</DependentUpon>
     </Compile>
+    <Compile Include="UI\Forms\FormDatatableEditor.cs">
+      <SubType>Form</SubType>
+    </Compile>
+    <Compile Include="UI\Forms\FormDatatableEditor.Designer.cs">
+      <DependentUpon>FormDatatableEditor.cs</DependentUpon>
+    </Compile>
     <Compile Include="UI\Forms\FormFourCcDialog.cs">
       <SubType>Form</SubType>
     </Compile>

@@ -81,6 +81,18 @@ namespace TJT
                 Log.Info("Failed to create FormIffEditor; IFF Editor will be unavailable: " + ex);
             }
 
+            // 09-03: register the typed Datatable Editor in the same try/catch isolation block.
+            // GetSubPanels() stays null — the MEF SPI is NOT widened (CON-M-01/02). The TRE Browser
+            // "Open in Datatable Editor" hand-off (Plan 09-05) finds this form by type in the forms list.
+            try
+            {
+                forms.Add(new FormDatatableEditor(this));
+            }
+            catch (Exception ex)
+            {
+                Log.Info("Failed to create FormDatatableEditor; Datatable Editor will be unavailable: " + ex);
+            }
+
             panels.Add(new SubPanelContainer("Controls", new SubPanel[]
             {
                 new ScenePanel(this, hotkeyManager, ini),

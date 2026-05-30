@@ -151,12 +151,47 @@ namespace TJT.UI.Controls
             Font = new Font("Microsoft Sans Serif", 8.25F, FontStyle.Regular);
 
             CellFormatting += OnCellFormatting;
+            CellValueNeeded += OnCellValueNeeded;
+            CellValuePushed += OnCellValuePushed;
         }
 
         /// <summary>The document currently bound to the grid (null before the first bind).</summary>
         public MutableDataTableDocument BoundDocument
         {
             get { return boundDocument; }
+        }
+
+        // ── Plan 09-06 Task 4: VirtualMode fallback (09-03 measured > 100 ms) ──
+        //
+        // The 09-03 bind-latency probe measured 265.63 ms cold / 121.93 ms typical for the 200×30
+        // combat-scale table on the production CellFormatting path — ABOVE the 100 ms threshold. So
+        // Plan 09-06 ships a VirtualMode fallback that engages for tables whose row count exceeds
+        // VirtualRowThreshold: instead of materializing a DataGridViewRow per model row (the cost the
+        // probe measured), it sets VirtualMode = true + RowCount and serves cell values on demand via
+        // CellValueNeeded / writes them back via CellValuePushed. Small tables keep the non-virtual
+        // path so the per-type editor widgets (CheckBox / ComboBox / NumericUpDown) work unchanged.
+
+        /// <summary>
+        /// Row-count threshold at/above which <see cref="BindMutable"/> uses VirtualMode (Plan 09-06
+        /// Task 4 — the 09-03 measurement showed the non-virtual bind exceeds 100 ms at combat scale).
+        /// </summary>
+        public const int VirtualRowThreshold = 150;
+
+        /// <summary>True iff the current binding is using VirtualMode (large-table fallback).</summary>
+        public bool IsVirtual { get; private set; }
+
+        // Callback the host installs so a VirtualMode CellValuePushed routes the edit through the
+        // editor-local undo controller (controller.Apply(EditCellValue(...))). Null in non-virtual mode.
+        private Action<int, int, string> virtualCommitCallback;
+
+        /// <summary>
+        /// Installs the commit-back callback for VirtualMode edits (Plan 09-06 Task 4). The host passes
+        /// a delegate that routes <c>(rowIndex, columnIndex, rawValue)</c> through
+        /// <c>controller.Apply(DatatableEditCommands.EditCellValue(...))</c>.
+        /// </summary>
+        public void SetVirtualCommitCallback(Action<int, int, string> callback)
+        {
+            virtualCommitCallback = callback;
         }
 
         /// <summary>
@@ -177,6 +212,9 @@ namespace TJT.UI.Controls
             SuspendLayout();
             try
             {
+                // Reset state from any previous bind.
+                VirtualMode = false;
+                RowCount = 0;
                 Rows.Clear();
                 Columns.Clear();
 
@@ -187,14 +225,26 @@ namespace TJT.UI.Controls
                 }
                 Columns.AddRange(colArray);
 
-                for (int r = 0; r < doc.Rows.Count; r++)
+                if (doc.Rows.Count >= VirtualRowThreshold)
                 {
-                    int rowIndex = Rows.Add();
-                    DataGridViewRow gridRow = Rows[rowIndex];
-                    MutableDataTableRow modelRow = doc.Rows[r];
-                    for (int c = 0; c < doc.Columns.Count && c < gridRow.Cells.Count; c++)
+                    // Plan 09-06 Task 4: VirtualMode fallback for large tables (the 09-03 measurement).
+                    // Do NOT materialize a row per model row — set RowCount and serve values on demand.
+                    IsVirtual = true;
+                    VirtualMode = true;
+                    RowCount = doc.Rows.Count;
+                }
+                else
+                {
+                    IsVirtual = false;
+                    for (int r = 0; r < doc.Rows.Count; r++)
                     {
-                        gridRow.Cells[c].Value = ProjectCellValue(modelRow.Cells[c], doc.Columns[c]);
+                        int rowIndex = Rows.Add();
+                        DataGridViewRow gridRow = Rows[rowIndex];
+                        MutableDataTableRow modelRow = doc.Rows[r];
+                        for (int c = 0; c < doc.Columns.Count && c < gridRow.Cells.Count; c++)
+                        {
+                            gridRow.Cells[c].Value = ProjectCellValue(modelRow.Cells[c], doc.Columns[c]);
+                        }
                     }
                 }
             }
@@ -202,6 +252,30 @@ namespace TJT.UI.Controls
             {
                 ResumeLayout();
             }
+        }
+
+        // VirtualMode read: serve the cell's display value from the backing model on demand (only
+        // invoked when VirtualMode == true; the non-virtual path sets Value directly).
+        private void OnCellValueNeeded(object sender, DataGridViewCellValueEventArgs e)
+        {
+            if (boundDocument == null) return;
+            if (e.RowIndex < 0 || e.RowIndex >= boundDocument.Rows.Count) return;
+            if (e.ColumnIndex < 0 || e.ColumnIndex >= boundDocument.Columns.Count) return;
+
+            MutableDataTableCell cell = boundDocument.Rows[e.RowIndex].Cells[e.ColumnIndex];
+            e.Value = ProjectCellValue(cell, boundDocument.Columns[e.ColumnIndex]);
+        }
+
+        // VirtualMode write: route the edited value back through the host's controller-backed commit
+        // callback so the edit joins the undo/redo stack (parity with the non-virtual CommitCell path).
+        private void OnCellValuePushed(object sender, DataGridViewCellValueEventArgs e)
+        {
+            if (boundDocument == null || virtualCommitCallback == null) return;
+            if (e.RowIndex < 0 || e.RowIndex >= boundDocument.Rows.Count) return;
+            if (e.ColumnIndex < 0 || e.ColumnIndex >= boundDocument.Columns.Count) return;
+
+            string raw = e.Value == null ? string.Empty : e.Value.ToString();
+            virtualCommitCallback(e.RowIndex, e.ColumnIndex, raw);
         }
 
         /// <summary>

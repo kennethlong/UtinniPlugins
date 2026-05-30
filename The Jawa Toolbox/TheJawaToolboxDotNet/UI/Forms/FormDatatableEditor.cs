@@ -283,6 +283,10 @@ namespace TJT.UI.Forms
                 .Select(c => DatatableColumnFactory.Build(c.Name, c.ColumnType))
                 .ToList();
 
+            // Plan 09-06 Task 4: install the VirtualMode commit callback BEFORE BindMutable so a large
+            // table's CellValuePushed routes the edit through the controller (undo/redo parity).
+            gridSurface.SetVirtualCommitCallback(CommitVirtualCell);
+
             gridSurface.BindMutable(mutable, columns);
 
             EnsureGridContextMenu();
@@ -1076,6 +1080,59 @@ namespace TJT.UI.Forms
             }
 
             gridSurface.RefreshMutable(dtDocument.Mutable);
+            UpdateDirtyVisuals();
+            UpdateCounters();
+        }
+
+        // Plan 09-06 Task 4: VirtualMode commit-back. In VirtualMode the grid has no materialized
+        // DataGridViewCell to read from, so CellValuePushed hands the raw edited string here; coerce it
+        // through the column type and route through the controller (undo/redo parity with CommitCell).
+        private void CommitVirtualCell(int rowIndex, int columnIndex, string raw)
+        {
+            if (dtDocument == null || controller == null) return;
+            MutableDataTableDocument m = dtDocument.Mutable;
+            if (rowIndex < 0 || rowIndex >= m.Rows.Count) return;
+            if (columnIndex < 0 || columnIndex >= m.Columns.Count) return;
+
+            MutableDataTableColumn column = m.Columns[columnIndex];
+            DataTableColumnType ct = column.ColumnType;
+            MutableDataTableCell cell = m.Rows[rowIndex].Cells[columnIndex];
+
+            DataTableCellValue newValue;
+            switch (ct.Type)
+            {
+                case DataType.Bool:
+                {
+                    bool isChecked = string.Equals(raw, "1", StringComparison.Ordinal)
+                        || string.Equals(raw, "true", StringComparison.OrdinalIgnoreCase)
+                        || string.Equals(raw, bool.TrueString, StringComparison.OrdinalIgnoreCase);
+                    newValue = DataTableCellValue.FromInt(isChecked ? 1 : 0);
+                    break;
+                }
+                case DataType.HashString:
+                {
+                    int stored = unchecked((int)DataTableHashCrc.Compute(raw));
+                    newValue = DataTableCellValue.FromInt(stored);
+                    break;
+                }
+                default:
+                {
+                    DataTableCellValue coerced;
+                    if (ct.TryCoerceCellValue(raw, out coerced))
+                    {
+                        newValue = coerced;
+                    }
+                    else
+                    {
+                        lblStatus.Text = "Value \"" + raw + "\" is not valid for column \"" + column.Name + "\".";
+                        lblStatus.ForeColor = Color.Red;
+                        return;
+                    }
+                    break;
+                }
+            }
+
+            controller.Apply(DatatableEditCommands.EditCellValue(cell, newValue));
             UpdateDirtyVisuals();
             UpdateCounters();
         }

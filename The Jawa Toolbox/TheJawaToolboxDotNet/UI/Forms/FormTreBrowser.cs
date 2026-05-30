@@ -33,6 +33,7 @@ using TJT.UI.Controls;
 using UtinniCore.Utinni;
 using UtinniCoreDotNet.Formats.Tre;
 using UtinniCoreDotNet.PluginFramework;
+using UtinniCoreDotNet.UI;
 using UtinniCoreDotNet.UI.Controls;
 using UtinniCoreDotNet.UI.Forms;
 using UtinniCoreDotNet.UI.Theme;
@@ -188,11 +189,12 @@ namespace TJT.UI.Forms
                 ? "Payload is enumerate-only — cannot open in IFF Editor."
                 : "Opens this entry in the IFF Editor with TRE provenance.";
 
-            // 09-05 D-10.2: HIDE (not just disable) the Datatable-Editor item unless the entry is a
-            // .tab AND its payload is resolvable (enumerate-only payloads can't be opened). Extension-
-            // only visibility per the V1 hand-off shape (iter-2 LOW).
-            bool isTab = string.Equals(Path.GetExtension(pn.FullPath ?? ""), ".tab", StringComparison.OrdinalIgnoreCase);
-            _miOpenInDatatableEditor.Visible = isTab && !d.EnumerateOnly;
+            // 09-05 D-10.2 (corrected): HIDE (not just disable) the Datatable-Editor item unless the
+            // entry is a datatable carrier whose payload is resolvable. Compiled TRE datatables are
+            // `datatables/**/*.iff` (FORM DTII), not `.tab` (the source form) — so the gate offers BOTH
+            // `.tab` and `.iff`-under-`datatables/` (DatatableHandoffPolicy). The FORM-DTII content is
+            // re-verified on click (the payload is not resolved at menu-open time).
+            _miOpenInDatatableEditor.Visible = DatatableHandoffPolicy.ShouldOfferDatatableEditor(pn.FullPath, d.EnumerateOnly);
             _miOpenInDatatableEditor.ToolTipText = "Opens this datatable in the typed Datatable Editor with TRE provenance.";
         }
 
@@ -263,8 +265,8 @@ namespace TJT.UI.Forms
 
         // 09-05 D-10.2 — TRE Browser hand-off to the Datatable Editor. Mirrors OnOpenInIffEditor
         // verbatim (off-UI-thread payload resolve → BeginInvoke marshal → FindOrCreate →
-        // OpenFromTreEntry). The visibility predicate (extension == ".tab") is enforced on the
-        // context-menu Opening event so this handler only fires for .tab entries.
+        // OpenFromTreEntry). Visibility is gated by DatatableHandoffPolicy (.tab OR .iff-under-
+        // datatables/) on the Opening event; the FORM-DTII content is verified here on click.
         private void OnOpenInDatatableEditor(object sender, EventArgs e)
         {
             PathNode pn = tvTre.SelectedNode != null ? tvTre.SelectedNode.Tag as PathNode : null;
@@ -285,6 +287,14 @@ namespace TJT.UI.Forms
                         if (!ok)
                         {
                             lblStatus.Text = "Cannot open " + logicalPath + " — payload is enumerate-only.";
+                            return;
+                        }
+                        // Content gate (D-10.2 corrected): the visibility predicate is path-based, so a
+                        // non-datatable `.iff` that happens to live under datatables/ could reach here.
+                        // Verify the FORM DTII root before handing off, with a clean message otherwise.
+                        if (!DatatableHandoffPolicy.IsDtiiPayload(payload))
+                        {
+                            lblStatus.Text = logicalPath + " is not a datatable (no FORM DTII root) — use Open in IFF Editor.";
                             return;
                         }
                         FormDatatableEditor editor = FindOrCreateDatatableEditor();

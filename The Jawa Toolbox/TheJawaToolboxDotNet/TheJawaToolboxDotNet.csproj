@@ -103,6 +103,7 @@
       <DependentUpon>FormStfCsvImportPreviewDialog.cs</DependentUpon>
     </Compile>
     <Compile Include="Saving\StringTableCsvSerializer.cs" />
+    <Compile Include="Saving\StringTableSaveTargets.cs" />
     <Compile Include="UI\Forms\FormFourCcDialog.cs">
       <SubType>Form</SubType>
     </Compile>

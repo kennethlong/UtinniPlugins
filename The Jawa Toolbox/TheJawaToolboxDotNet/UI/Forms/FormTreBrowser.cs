@@ -61,6 +61,7 @@ namespace TJT.UI.Forms
         private UtinniContextMenuStrip _tvTreContextMenu;  // 08-05 Task 4 — Open in IFF Editor
         private ToolStripMenuItem _miOpenInIffEditor;       // 08-05 Task 4
         private ToolStripMenuItem _miOpenInDatatableEditor; // 09-05 D-10.2 — Open in Datatable Editor
+        private ToolStripMenuItem _miOpenInStringTableEditor; // 10-05 D-04 — Open in String-table Editor
 
         public FormTreBrowser(IEditorPlugin editorPlugin)
         {
@@ -152,6 +153,11 @@ namespace TJT.UI.Forms
             _miOpenInDatatableEditor = new ToolStripMenuItem("Open in Datatable Editor");
             _miOpenInDatatableEditor.Click += OnOpenInDatatableEditor;
             _tvTreContextMenu.Items.Add(_miOpenInDatatableEditor);
+            // 10-05 D-04: Open in String-table Editor — HIDDEN unless the selected entry is a .stf (the
+            // extension-only gate; the magic sniff is a secondary affordance the framework policy covers).
+            _miOpenInStringTableEditor = new ToolStripMenuItem("Open in String-table Editor");
+            _miOpenInStringTableEditor.Click += OnOpenInStringTableEditor;
+            _tvTreContextMenu.Items.Add(_miOpenInStringTableEditor);
             _tvTreContextMenu.Opening += OnTvTreContextMenuOpening;
             tvTre.ContextMenuStrip = _tvTreContextMenu;
             // Right-click should select the underlying node so the menu's logic targets it.
@@ -196,6 +202,13 @@ namespace TJT.UI.Forms
             // re-verified on click (the payload is not resolved at menu-open time).
             _miOpenInDatatableEditor.Visible = DatatableHandoffPolicy.ShouldOfferDatatableEditor(pn.FullPath, d.EnumerateOnly);
             _miOpenInDatatableEditor.ToolTipText = "Opens this datatable in the typed Datatable Editor with TRE provenance.";
+
+            // 10-05 D-04: HIDE the String-table-Editor item unless the entry is a .stf carrier whose
+            // payload is resolvable. F11: the payload is NOT resolved at menu-Opening time (TrePayloadResolver
+            // resolves lazily on click), so the gate is extension-only here (payload=null); the magic sniff
+            // is a secondary affordance for extension-less .stf entries, covered by the framework policy tests.
+            _miOpenInStringTableEditor.Visible = StringTableHandoffPolicy.ShouldOfferStringTableEditor(pn.FullPath, null, d.EnumerateOnly);
+            _miOpenInStringTableEditor.ToolTipText = "Opens this string table in the String-table Editor with TRE provenance.";
         }
 
         private void OnOpenInIffEditor(object sender, EventArgs e)
@@ -335,6 +348,74 @@ namespace TJT.UI.Forms
             foreach (IEditorForm f in editorPlugin.GetForms())
             {
                 FormDatatableEditor editor = f as FormDatatableEditor;
+                if (editor != null) return editor;
+            }
+            return null;
+        }
+
+        // 10-05 D-04 — TRE Browser hand-off to the String-table Editor. Mirrors OnOpenInDatatableEditor
+        // verbatim (off-UI-thread payload resolve → BeginInvoke marshal → FindOrCreate → OpenFromTreEntry).
+        // Visibility is gated by StringTableHandoffPolicy (.stf extension) on the Opening event; the .stf
+        // magic is re-verified by StringTableDocument.FromBytes here on click (it throws a clean message
+        // for a non-.stf payload). NO IFF-Editor hand-off — .stf is not IFF.
+        private void OnOpenInStringTableEditor(object sender, EventArgs e)
+        {
+            PathNode pn = tvTre.SelectedNode != null ? tvTre.SelectedNode.Tag as PathNode : null;
+            if (pn == null || !pn.IsLeaf) return;
+            TreEntryDescriptor d;
+            if (_index == null || !_index.TryGetDescriptor(pn.FullPath, out d)) return;
+            TreEntryDescriptor descriptor = d;
+            string logicalPath = pn.FullPath;
+            Task.Run(() =>
+            {
+                try
+                {
+                    byte[] payload;
+                    bool ok = TrePayloadResolver.TryResolve(descriptor, out payload);
+                    if (!IsHandleCreated) return;
+                    BeginInvoke((Action)(() =>
+                    {
+                        if (!ok)
+                        {
+                            lblStatus.Text = "Cannot open " + logicalPath + " — payload is enumerate-only.";
+                            return;
+                        }
+                        FormStringTableEditor editor = FindOrCreateStringTableEditor();
+                        if (editor == null)
+                        {
+                            lblStatus.Text = "String-table Editor is unavailable in this session.";
+                            return;
+                        }
+                        editor.OpenFromTreEntry(
+                            payload,
+                            descriptor.ResolvedArchivePath,
+                            logicalPath,
+                            descriptor.ArchiveLocalOffset);
+                        editor.Show();
+                        editor.Activate();
+                    }));
+                }
+                catch (Exception ex)
+                {
+                    if (IsHandleCreated)
+                    {
+                        BeginInvoke((Action)(() =>
+                        {
+                            lblStatus.Text = "Open-in-String-table-Editor failed: " + ex.Message;
+                            lblStatus.ForeColor = Color.Red;
+                        }));
+                    }
+                }
+            });
+        }
+
+        // Find the FormStringTableEditor instance the plugin registered in GetForms() and return it.
+        // Returns null if the editor failed to load (Plugin.cs registration sits inside a try/catch).
+        private FormStringTableEditor FindOrCreateStringTableEditor()
+        {
+            foreach (IEditorForm f in editorPlugin.GetForms())
+            {
+                FormStringTableEditor editor = f as FormStringTableEditor;
                 if (editor != null) return editor;
             }
             return null;

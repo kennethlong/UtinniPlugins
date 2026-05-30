@@ -96,6 +96,13 @@
     <Compile Include="UI\Forms\FormStringTableEditor.Designer.cs">
       <DependentUpon>FormStringTableEditor.cs</DependentUpon>
     </Compile>
+    <Compile Include="UI\Forms\FormStfCsvImportPreviewDialog.cs">
+      <SubType>Form</SubType>
+    </Compile>
+    <Compile Include="UI\Forms\FormStfCsvImportPreviewDialog.Designer.cs">
+      <DependentUpon>FormStfCsvImportPreviewDialog.cs</DependentUpon>
+    </Compile>
+    <Compile Include="Saving\StringTableCsvSerializer.cs" />
     <Compile Include="UI\Forms\FormFourCcDialog.cs">
       <SubType>Form</SubType>
     </Compile>

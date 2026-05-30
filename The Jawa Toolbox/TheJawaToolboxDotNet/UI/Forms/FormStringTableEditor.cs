@@ -27,7 +27,9 @@ using System.Collections.Generic;
 using System.Drawing;
 using System.IO;
 using System.Linq;
+using System.Text.RegularExpressions;
 using System.Windows.Forms;
+using TJT.Saving;
 using UtinniCore.Utinni;
 using UtinniCoreDotNet.Editing;
 using UtinniCoreDotNet.Formats.Iff;
@@ -48,11 +50,12 @@ namespace TJT.UI.Forms
     /// with the four D-01 T4 verbs routed through 10-01's <see cref="StringTableEditController"/> — no
     /// per-type cell widgets, no type-change cascade, no column structural ops.
     ///
-    /// <para><b>Plan 10-03 staging:</b> this plan ships the host + grid + T4 mutation + the
-    /// <c>Open…</c> entry point + the read-only <c>id</c>-column toggle only. The Save▾ menu items +
-    /// Find / Replace / Filter / CSV / PO / Reload toolbar buttons render DISABLED with explanatory
-    /// tooltips (NOT throwing). Subsequent plans wire them: 10-04 (Find/Replace + Filter + CSV + PO),
-    /// 10-05 (save targets + reload dispatch + TRE Browser hand-off).</para>
+    /// <para><b>Staging:</b> 10-03 shipped the host + grid + T4 mutation + the <c>Open…</c> entry point
+    /// + the read-only <c>id</c>-column toggle. 10-04 wired the bulk/translation features: Find/Replace
+    /// (key + text, regex opt-in), the live filter row (Ctrl+L, view-only Row.Visible), view-only column
+    /// sort (locked tooltip), and CSV/TSV import (preview modal + single-transaction apply) / CSV + PO
+    /// export. The Save▾ menu items + Reload button remain DISABLED with explanatory tooltips (NOT
+    /// throwing) until 10-05 (save targets + reload dispatch + TRE Browser hand-off).</para>
     ///
     /// <para><b>Unicode fidelity (SC4 non-behavior):</b> the Text column commits UTF-16LE verbatim —
     /// no smart-quote / ellipsis / dash / typo "fix". The editing TextBox has OS auto-complete OFF and
@@ -86,6 +89,18 @@ namespace TJT.UI.Forms
         /// gate the Save▾ modes; defaults to <see cref="OpenSource.Unknown"/>.
         /// </summary>
         public OpenSource Source { get; set; }
+
+        // ── Plan 10-04: Find/Replace pane state (D-03a) ──────────────────────
+        // Matches are (gridRowIndex, columnIndex) over the CURRENT grid rows (visual). Navigation +
+        // commit-back both key off the grid row's Tag entry, so a view-only sort never corrupts a write.
+        private readonly List<KeyValuePair<int, int>> findMatches = new List<KeyValuePair<int, int>>();
+        private int currentMatchIndex = -1;
+        private bool findMatchCase;
+        private bool findRegex;
+        private Timer findDebounceTimer;
+
+        // ── Plan 10-04: live filter state (D-03c) ────────────────────────────
+        private Timer filterDebounceTimer;
 
         // Save▾ drop-down items (DISABLED stubs in Plan 10-03; 10-05 wires them).
         private UtinniContextMenuStrip saveMenu;
@@ -139,16 +154,20 @@ namespace TJT.UI.Forms
             // Default provenance is Unknown (Plan 10-05 open paths override).
             Source = OpenSource.Unknown.Instance;
 
-            // Tooltips for the deferred-feature buttons (rendered disabled, NOT throwing).
+            // Tooltips.
             toolTip.SetToolTip(btnSave, "Save the current string table (choose a target).");
             toolTip.SetToolTip(btnImportCsv, "Import a CSV/TSV delta (preview before apply).");
             toolTip.SetToolTip(btnExportCsv, "Export the current string table to CSV/TSV.");
             toolTip.SetToolTip(btnExportPo, "Export the current string table to PO/gettext.");
             toolTip.SetToolTip(btnFind, "Find (Ctrl+F)");
             toolTip.SetToolTip(btnReplace, "Replace (Ctrl+H)");
-            toolTip.SetToolTip(btnFilter, "Filter visible rows over key + text.");
+            toolTip.SetToolTip(btnFilter, "Filter visible rows over key + text (Ctrl+L).");
             toolTip.SetToolTip(btnReload, "Reloads on next scene change.");
             toolTip.SetToolTip(tglShowId, "Show the machine-managed id column (read-only diagnostic).");
+            toolTip.SetToolTip(btnFindPrev, "Find previous (Shift+F3)");
+            toolTip.SetToolTip(btnFindNext, "Find next (F3)");
+            toolTip.SetToolTip(btnFindClose, "Close (Esc)");
+            toolTip.SetToolTip(btnClearFilter, "Clear filter (Esc)");
 
             // ENABLED, functional toolbar buttons in Plan 10-03: Open… + the T4 verbs + Show id.
             btnOpen.Click += OnOpenClicked;
@@ -158,6 +177,30 @@ namespace TJT.UI.Forms
             btnAddEntry.Click += OnAddEntryClicked;
             btnRemoveEntry.Click += OnRemoveEntryClicked;
             tglShowId.CheckedChanged += OnShowIdToggled;
+
+            // Plan 10-04: Find/Replace + Filter + CSV/PO wiring (enabled on LoadDocument).
+            btnFind.Click += (s, e) => ToggleFindPane(false);
+            btnReplace.Click += (s, e) => ToggleFindPane(true);
+            btnFindPrev.Click += (s, e) => FindPrev();
+            btnFindNext.Click += (s, e) => FindNext();
+            btnFindClose.Click += (s, e) => CollapseFindPane();
+            btnReplaceOne.Click += OnReplaceOneClicked;
+            btnReplaceAll.Click += OnReplaceAllClicked;
+            tglMatchCase.CheckedChanged += (s, e) => { findMatchCase = tglMatchCase.Checked; RecomputeMatches(); };
+            tglRegex.CheckedChanged += (s, e) => { findRegex = tglRegex.Checked; RecomputeMatches(); };
+            findDebounceTimer = new Timer { Interval = 200 };
+            findDebounceTimer.Tick += (s, e) => { findDebounceTimer.Stop(); RecomputeMatches(); };
+            txtFind.TextChanged += (s, e) => { findDebounceTimer.Stop(); findDebounceTimer.Start(); };
+
+            btnFilter.Click += (s, e) => ToggleFilterRow();
+            btnClearFilter.Click += (s, e) => { txtFilter.Text = ""; ApplyFilter(); };
+            filterDebounceTimer = new Timer { Interval = 250 };
+            filterDebounceTimer.Tick += (s, e) => { filterDebounceTimer.Stop(); ApplyFilter(); };
+            txtFilter.TextChanged += (s, e) => { filterDebounceTimer.Stop(); filterDebounceTimer.Start(); };
+
+            btnImportCsv.Click += OnImportCsvClicked;
+            btnExportCsv.Click += OnExportCsvClicked;
+            btnExportPo.Click += OnExportPoClicked;
 
             // Grid commit-back + cell-state visuals.
             gridSurface.CellValidating += OnCellValidating;
@@ -225,10 +268,23 @@ namespace TJT.UI.Forms
 
             RebindGrid();
 
-            // The T4 verbs + Show id become functional once a document is bound.
+            // The T4 verbs + Show id + the Plan 10-04 bulk features become functional once a doc is bound.
             btnAddEntry.Enabled = true;
             btnRemoveEntry.Enabled = true;
             tglShowId.Enabled = true;
+            btnFind.Enabled = true;
+            btnReplace.Enabled = true;
+            btnFilter.Enabled = true;
+            btnImportCsv.Enabled = true;
+            btnExportCsv.Enabled = true;
+            btnExportPo.Enabled = true;
+
+            // D-03c view-only sort: the LOCKED hover tooltip on both sortable columns.
+            colKey.ToolTipText = "View order only — save serializes strings by id and names alphabetically.";
+            colText.ToolTipText = "View order only — save serializes strings by id and names alphabetically.";
+
+            ResetFindState();
+            txtFilter.Text = "";
 
             // Restore the persisted id-column visibility (setting Checked flips colId.Visible).
             tglShowId.Checked = ini.GetBool("StringTableEditor", "showIdColumn");
@@ -314,6 +370,12 @@ namespace TJT.UI.Forms
             }
 
             UpdateRowHeaderGlyphs();
+
+            // A structural change invalidates the (row-index-keyed) match set; recompute against the new
+            // rows if a query is active, and re-apply an active filter so hidden rows stay hidden.
+            ResetFindState();
+            if (pnlFindReplace.Visible && !string.IsNullOrEmpty(txtFind.Text)) RecomputeMatches();
+            if (pnlFilter.Visible && !string.IsNullOrEmpty(txtFilter.Text)) ApplyFilter();
         }
 
         private static MutableStringTableEntry EntryForRow(DataGridViewRow row)
@@ -508,6 +570,30 @@ namespace TJT.UI.Forms
             if (e.RowIndex < 0 || e.RowIndex >= gridSurface.Rows.Count) return;
             if (e.ColumnIndex == colId.Index) return;
 
+            // Search-match overlay (Plan 10-04): the active match gets a full accent background; other
+            // matches get an accent foreground. Takes precedence over the dirty/added tint so the user can
+            // see what Find landed on.
+            if (findMatches.Count > 0 && (e.ColumnIndex == colKey.Index || e.ColumnIndex == colText.Index))
+            {
+                bool isMatch = findMatches.Any(m => m.Key == e.RowIndex && m.Value == e.ColumnIndex);
+                if (isMatch)
+                {
+                    bool isActive = currentMatchIndex >= 0 && currentMatchIndex < findMatches.Count
+                        && findMatches[currentMatchIndex].Key == e.RowIndex
+                        && findMatches[currentMatchIndex].Value == e.ColumnIndex;
+                    if (isActive)
+                    {
+                        e.CellStyle.BackColor = Colors.Secondary();
+                        e.CellStyle.ForeColor = Colors.Font();
+                    }
+                    else
+                    {
+                        e.CellStyle.ForeColor = Colors.Secondary();
+                    }
+                    return;
+                }
+            }
+
             MutableStringTableEntry entry = EntryForRow(gridSurface.Rows[e.RowIndex]);
             if (entry == null) return;
 
@@ -525,6 +611,389 @@ namespace TJT.UI.Forms
                 MutableStringTableEntry entry = EntryForRow(gridSurface.Rows[i]);
                 string glyph = entry == null ? "" : (entry.IsAdded ? "＋" : (entry.IsDirty ? "●" : ""));
                 gridSurface.Rows[i].HeaderCell.Value = glyph;
+            }
+        }
+
+        // ── Plan 10-04: Find/Replace pane (D-03a) ────────────────────────────
+
+        private void ToggleFindPane(bool withReplace)
+        {
+            if (document == null) return;
+            if (!pnlFindReplace.Visible) pnlFindReplace.Visible = true;
+            txtReplace.Visible = withReplace;
+            btnReplaceOne.Visible = withReplace;
+            btnReplaceAll.Visible = withReplace;
+            txtFind.Focus();
+            txtFind.SelectAll();
+        }
+
+        private void CollapseFindPane()
+        {
+            pnlFindReplace.Visible = false;
+            ResetFindState();
+        }
+
+        private void ResetFindState()
+        {
+            findMatches.Clear();
+            currentMatchIndex = -1;
+            lblFindCount.Text = "0 / 0";
+            lblFindCount.ForeColor = Colors.FontDisabled();
+            gridSurface.Invalidate();
+        }
+
+        // Rebuild the match set over the VISIBLE grid rows × {Key, Text}. Case toggle + regex opt-in; a
+        // bad regex surfaces an "invalid pattern" count rather than throwing. A 2s match timeout guards
+        // against a catastrophic pattern freezing the UI thread.
+        private void RecomputeMatches()
+        {
+            findMatches.Clear();
+            currentMatchIndex = -1;
+
+            if (document == null || string.IsNullOrEmpty(txtFind.Text))
+            {
+                lblFindCount.Text = "0 / 0";
+                lblFindCount.ForeColor = Colors.FontDisabled();
+                gridSurface.Invalidate();
+                return;
+            }
+
+            string query = txtFind.Text;
+            Regex regex = null;
+            if (findRegex)
+            {
+                try
+                {
+                    RegexOptions opts = findMatchCase ? RegexOptions.None : RegexOptions.IgnoreCase;
+                    regex = new Regex(query, opts, TimeSpan.FromSeconds(2));
+                }
+                catch (ArgumentException)
+                {
+                    lblFindCount.Text = "invalid pattern";
+                    lblFindCount.ForeColor = Colors.Secondary();
+                    gridSurface.Invalidate();
+                    return;
+                }
+            }
+
+            int[] cols = { colKey.Index, colText.Index };
+            try
+            {
+                for (int r = 0; r < gridSurface.Rows.Count; r++)
+                {
+                    if (!gridSurface.Rows[r].Visible) continue;
+                    foreach (int c in cols)
+                    {
+                        object val = gridSurface.Rows[r].Cells[c].Value;
+                        string text = val == null ? string.Empty : val.ToString();
+                        bool hit = regex != null
+                            ? regex.IsMatch(text)
+                            : text.IndexOf(query, findMatchCase ? StringComparison.Ordinal : StringComparison.OrdinalIgnoreCase) >= 0;
+                        if (hit) findMatches.Add(new KeyValuePair<int, int>(r, c));
+                    }
+                }
+            }
+            catch (RegexMatchTimeoutException)
+            {
+                findMatches.Clear();
+                lblFindCount.Text = "pattern too slow";
+                lblFindCount.ForeColor = Colors.Secondary();
+                gridSurface.Invalidate();
+                return;
+            }
+
+            if (findMatches.Count > 0)
+            {
+                currentMatchIndex = 0;
+                JumpToCurrentMatch();
+            }
+            UpdateFindCount();
+            gridSurface.Invalidate();
+        }
+
+        private void UpdateFindCount()
+        {
+            if (findMatches.Count == 0)
+            {
+                lblFindCount.Text = "0 / 0";
+                lblFindCount.ForeColor = Colors.FontDisabled();
+            }
+            else
+            {
+                lblFindCount.Text = (currentMatchIndex + 1) + " / " + findMatches.Count;
+                lblFindCount.ForeColor = Colors.Font();
+            }
+        }
+
+        private void JumpToCurrentMatch()
+        {
+            if (currentMatchIndex < 0 || currentMatchIndex >= findMatches.Count) return;
+            KeyValuePair<int, int> m = findMatches[currentMatchIndex];
+            if (m.Key >= 0 && m.Key < gridSurface.Rows.Count && m.Value >= 0 && m.Value < gridSurface.Columns.Count)
+            {
+                gridSurface.CurrentCell = gridSurface.Rows[m.Key].Cells[m.Value];
+            }
+            gridSurface.Invalidate();
+        }
+
+        private void FindNext()
+        {
+            if (findMatches.Count == 0) return;
+            currentMatchIndex = (currentMatchIndex + 1) % findMatches.Count;
+            JumpToCurrentMatch();
+            UpdateFindCount();
+        }
+
+        private void FindPrev()
+        {
+            if (findMatches.Count == 0) return;
+            currentMatchIndex = (currentMatchIndex - 1 + findMatches.Count) % findMatches.Count;
+            JumpToCurrentMatch();
+            UpdateFindCount();
+        }
+
+        // Replace the current match's cell. A KEY-cell replace re-runs ValidateName (invalid → status red,
+        // no commit); a TEXT-cell replace never fails.
+        private void OnReplaceOneClicked(object sender, EventArgs e)
+        {
+            if (controller == null || document == null) return;
+            if (currentMatchIndex < 0 || currentMatchIndex >= findMatches.Count) return;
+            KeyValuePair<int, int> m = findMatches[currentMatchIndex];
+            if (ReplaceMatchCell(m.Key, m.Value)) RecomputeMatches();
+        }
+
+        // Replace EVERY match. Text replacements always apply; key replacements that fail ValidateName are
+        // counted + skipped. Each replacement is its own undoable edit.
+        private void OnReplaceAllClicked(object sender, EventArgs e)
+        {
+            if (controller == null || document == null || findMatches.Count == 0) return;
+
+            int replaced = 0, skipped = 0;
+            // Snapshot the matches — applying edits + recompute would mutate the live list mid-loop.
+            var snapshot = new List<KeyValuePair<int, int>>(findMatches);
+            foreach (KeyValuePair<int, int> m in snapshot)
+            {
+                if (ReplaceMatchCell(m.Key, m.Value)) replaced++; else skipped++;
+            }
+
+            lblStatus.Text = replaced + " replaced" + (skipped > 0 ? (", " + skipped + " skipped (invalid key)") : "");
+            lblStatus.ForeColor = skipped > 0 ? Color.Red : Colors.Font();
+            RecomputeMatches();
+        }
+
+        // Apply the txtReplace text to one matched cell, routed through the controller (undoable). Returns
+        // false when a KEY replacement fails ValidateName (no commit).
+        private bool ReplaceMatchCell(int rowIndex, int colIndex)
+        {
+            if (rowIndex < 0 || rowIndex >= gridSurface.Rows.Count) return false;
+            MutableStringTableEntry entry = EntryForRow(gridSurface.Rows[rowIndex]);
+            if (entry == null) return false;
+
+            object val = gridSurface.Rows[rowIndex].Cells[colIndex].Value;
+            string current = val == null ? string.Empty : val.ToString();
+            string replaced = ApplyReplace(current, txtReplace.Text);
+
+            if (colIndex == colKey.Index)
+            {
+                if (string.Equals(replaced, entry.Name, StringComparison.Ordinal)) return true;
+                StringTableNameValidation result = document.ValidateName(replaced, entry);
+                if (!result.Ok)
+                {
+                    lblStatus.Text = result.Reason;
+                    lblStatus.ForeColor = Color.Red;
+                    return false;
+                }
+                controller.Apply(StringTableEditCommands.RenameKey(entry, replaced));
+                gridSurface.Rows[rowIndex].Cells[colIndex].Value = replaced;
+                return true;
+            }
+
+            if (colIndex == colText.Index)
+            {
+                if (string.Equals(replaced, entry.Text, StringComparison.Ordinal)) return true;
+                controller.Apply(StringTableEditCommands.EditText(entry, replaced));
+                gridSurface.Rows[rowIndex].Cells[colIndex].Value = replaced;
+                return true;
+            }
+
+            return false;
+        }
+
+        // Replace occurrences of the Find query within a cell's text (regex or literal, honoring the case
+        // toggle). For a regex find, the replacement honors $-group substitutions.
+        private string ApplyReplace(string input, string replacement)
+        {
+            replacement = replacement ?? string.Empty;
+            if (string.IsNullOrEmpty(txtFind.Text)) return input;
+
+            if (findRegex)
+            {
+                try
+                {
+                    RegexOptions opts = findMatchCase ? RegexOptions.None : RegexOptions.IgnoreCase;
+                    return Regex.Replace(input, txtFind.Text, replacement, opts, TimeSpan.FromSeconds(2));
+                }
+                catch (ArgumentException) { return input; }
+                catch (RegexMatchTimeoutException) { return input; }
+            }
+
+            StringComparison cmp = findMatchCase ? StringComparison.Ordinal : StringComparison.OrdinalIgnoreCase;
+            var sb = new System.Text.StringBuilder();
+            int i = 0;
+            while (i < input.Length)
+            {
+                int hit = input.IndexOf(txtFind.Text, i, cmp);
+                if (hit < 0) { sb.Append(input.Substring(i)); break; }
+                sb.Append(input.Substring(i, hit - i));
+                sb.Append(replacement);
+                i = hit + txtFind.Text.Length;
+            }
+            return sb.ToString();
+        }
+
+        // ── Plan 10-04: live filter row (D-03c — view-only) ──────────────────
+
+        private void ToggleFilterRow()
+        {
+            if (document == null) return;
+            pnlFilter.Visible = !pnlFilter.Visible;
+            ini.AddSetting("StringTableEditor", "filterVisible", pnlFilter.Visible ? "1" : "0", UtINI.Value.Types.VtBool);
+            try { ini.Save(); } catch { /* persistence best-effort */ }
+
+            if (pnlFilter.Visible) { txtFilter.Focus(); }
+            else { txtFilter.Text = ""; ApplyFilter(); }
+        }
+
+        // Hide rows whose Key + Text both miss the filter query (case-insensitive). VIEW-ONLY — never
+        // mutates the document or the on-disk order (D-03c). Updates the shown/total count.
+        private void ApplyFilter()
+        {
+            if (document == null) return;
+            string q = txtFilter.Text ?? string.Empty;
+            int shown = 0;
+            int total = gridSurface.Rows.Count;
+
+            // CurrentCell must leave a row before it is hidden, or WinForms throws.
+            if (q.Length > 0 && gridSurface.CurrentCell != null) gridSurface.CurrentCell = null;
+
+            for (int r = 0; r < gridSurface.Rows.Count; r++)
+            {
+                bool visible = true;
+                if (q.Length > 0)
+                {
+                    string key = CellText(r, colKey.Index);
+                    string text = CellText(r, colText.Index);
+                    visible = key.IndexOf(q, StringComparison.OrdinalIgnoreCase) >= 0
+                           || text.IndexOf(q, StringComparison.OrdinalIgnoreCase) >= 0;
+                }
+                gridSurface.Rows[r].Visible = visible;
+                if (visible) shown++;
+            }
+
+            lblFilterCount.Text = q.Length > 0 ? (shown + " / " + total) : "";
+            lblFilterCount.ForeColor = Colors.FontDisabled();
+            UpdateCounters();
+        }
+
+        private string CellText(int rowIndex, int colIndex)
+        {
+            object v = gridSurface.Rows[rowIndex].Cells[colIndex].Value;
+            return v == null ? string.Empty : v.ToString();
+        }
+
+        private bool FilterActive()
+        {
+            return pnlFilter.Visible && !string.IsNullOrEmpty(txtFilter.Text);
+        }
+
+        // ── Plan 10-04: CSV import / export + PO export (D-03b / D-03d) ───────
+
+        private void OnImportCsvClicked(object sender, EventArgs e)
+        {
+            if (document == null || controller == null) return;
+            using (var ofd = new OpenFileDialog())
+            {
+                ofd.Title = "Import CSV…";
+                ofd.Filter = "CSV files (*.csv)|*.csv|TSV files (*.tsv)|*.tsv|All files (*.*)|*.*";
+                if (ofd.ShowDialog(this) != DialogResult.OK) return;
+
+                lblStatus.Text = "Importing CSV…";
+                lblStatus.ForeColor = Colors.Font();
+                try
+                {
+                    StringTableCsvImportPlan plan = StringTableCsvSerializer.LoadAndPlan(document, ofd.FileName);
+                    using (var dlg = new FormStfCsvImportPreviewDialog(plan, Path.GetFileName(ofd.FileName), displayName ?? "string table"))
+                    {
+                        if (dlg.ShowDialog(this) != DialogResult.OK)
+                        {
+                            lblStatus.Text = "CSV import cancelled.";
+                            lblStatus.ForeColor = Colors.Font();
+                            return;
+                        }
+                    }
+
+                    controller.Apply(StringTableEditCommands.ApplyCsvImport(document, plan));
+                    RebindGrid();
+                    lblStatus.Text = "Imported " + Path.GetFileName(ofd.FileName) + ": "
+                        + plan.Changes.Count + " changed, " + plan.Added.Count + " added, "
+                        + plan.Unchanged.Count + " preserved as original bytes.";
+                    lblStatus.ForeColor = Colors.Font();
+                }
+                catch (Exception ex)
+                {
+                    lblStatus.Text = "CSV import failed: " + ex.Message;
+                    lblStatus.ForeColor = Color.Red;
+                }
+            }
+        }
+
+        private void OnExportCsvClicked(object sender, EventArgs e)
+        {
+            if (document == null) return;
+            using (var sfd = new SaveFileDialog())
+            {
+                sfd.Title = "Export CSV…";
+                sfd.Filter = "CSV files (*.csv)|*.csv|TSV files (*.tsv)|*.tsv";
+                sfd.FileName = !string.IsNullOrEmpty(displayName)
+                    ? Path.GetFileNameWithoutExtension(displayName) + ".csv"
+                    : "stringtable.csv";
+                if (sfd.ShowDialog(this) != DialogResult.OK) return;
+                try
+                {
+                    StringTableCsvSerializer.Export(document, sfd.FileName);
+                    lblStatus.Text = "Exported " + Path.GetFileName(sfd.FileName);
+                    lblStatus.ForeColor = Colors.Font();
+                }
+                catch (Exception ex)
+                {
+                    lblStatus.Text = "CSV export failed: " + ex.Message;
+                    lblStatus.ForeColor = Color.Red;
+                }
+            }
+        }
+
+        private void OnExportPoClicked(object sender, EventArgs e)
+        {
+            if (document == null) return;
+            using (var sfd = new SaveFileDialog())
+            {
+                sfd.Title = "Export PO…";
+                sfd.Filter = "PO files (*.po)|*.po|All files (*.*)|*.*";
+                sfd.FileName = !string.IsNullOrEmpty(displayName)
+                    ? Path.GetFileNameWithoutExtension(displayName) + ".po"
+                    : "stringtable.po";
+                if (sfd.ShowDialog(this) != DialogResult.OK) return;
+                try
+                {
+                    StringTableCsvSerializer.ExportPo(document, sfd.FileName);
+                    lblStatus.Text = "Exported " + Path.GetFileName(sfd.FileName);
+                    lblStatus.ForeColor = Colors.Font();
+                }
+                catch (Exception ex)
+                {
+                    lblStatus.Text = "PO export failed: " + ex.Message;
+                    lblStatus.ForeColor = Color.Red;
+                }
             }
         }
 
@@ -559,14 +1028,22 @@ namespace TJT.UI.Forms
             int entries = document.Entries.Count;
             int dirty = document.Entries.Count(en => en.IsDirty || en.IsAdded);
 
+            // When a live filter is active, append the visible-row count (D-03c view-only).
+            string shownSuffix = "";
+            if (FilterActive())
+            {
+                int shown = gridSurface.Rows.Cast<DataGridViewRow>().Count(r => r.Visible);
+                shownSuffix = " · " + shown + " shown";
+            }
+
             if (dirty == 0)
             {
-                lblCounters.Text = entries + " entries";
-                lblCounters.ForeColor = Colors.FontDisabled();
+                lblCounters.Text = entries + " entries" + shownSuffix;
+                lblCounters.ForeColor = shownSuffix.Length > 0 ? Colors.Font() : Colors.FontDisabled();
             }
             else
             {
-                lblCounters.Text = entries + " entries · " + dirty + " dirty";
+                lblCounters.Text = entries + " entries · " + dirty + " dirty" + shownSuffix;
                 lblCounters.ForeColor = Colors.Font();
             }
         }
@@ -618,8 +1095,9 @@ namespace TJT.UI.Forms
         // ── Keyboard shortcuts ───────────────────────────────────────────────
         //
         // Ctrl+Z / Ctrl+Y → editor-local undo / redo (CF-04), caught at the form BEFORE the grid so they
-        // never reach the scene UndoRedoManager. Delete (outside cell-edit) removes the current entry.
-        // Ctrl+S + Find/Replace/Filter chords are deferred (save = 10-05; Find/Replace/Filter = 10-04).
+        // never reach the scene UndoRedoManager. Ctrl+F / Ctrl+H → Find/Replace; Ctrl+L → Filter row;
+        // F3 / Shift+F3 cycle matches; Esc collapses Find or clears Filter. Delete (outside cell-edit)
+        // removes the current entry. Ctrl+S is deferred to 10-05 (save).
         protected override bool ProcessCmdKey(ref Message msg, Keys keyData)
         {
             if (keyData == (Keys.Control | Keys.Z))
@@ -639,6 +1117,36 @@ namespace TJT.UI.Forms
                     RebindGrid();
                 }
                 return true;
+            }
+            if (keyData == (Keys.Control | Keys.F))
+            {
+                if (document != null) ToggleFindPane(false);
+                return true;
+            }
+            if (keyData == (Keys.Control | Keys.H))
+            {
+                if (document != null) ToggleFindPane(true);
+                return true;
+            }
+            if (keyData == (Keys.Control | Keys.L))
+            {
+                if (document != null) ToggleFilterRow();
+                return true;
+            }
+            if (keyData == Keys.F3)
+            {
+                if (pnlFindReplace.Visible) FindNext();
+                return true;
+            }
+            if (keyData == (Keys.Shift | Keys.F3))
+            {
+                if (pnlFindReplace.Visible) FindPrev();
+                return true;
+            }
+            if (keyData == Keys.Escape)
+            {
+                if (pnlFindReplace.Visible) { CollapseFindPane(); return true; }
+                if (FilterActive()) { txtFilter.Text = ""; ApplyFilter(); return true; }
             }
             if (keyData == Keys.Delete
                 && controller != null

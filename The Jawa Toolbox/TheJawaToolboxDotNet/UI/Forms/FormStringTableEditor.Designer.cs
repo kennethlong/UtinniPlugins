@@ -65,7 +65,21 @@ namespace TJT.UI.Forms
             this.lblReloadBadge = new UtinniCoreDotNet.UI.Controls.UtinniLabel();
             this.lblDirty = new UtinniCoreDotNet.UI.Controls.UtinniLabel();
             this.pnlFindReplace = new System.Windows.Forms.Panel();
+            this.txtFind = new UtinniCoreDotNet.UI.Controls.UtinniTextbox();
+            this.lblFindCount = new UtinniCoreDotNet.UI.Controls.UtinniLabel();
+            this.btnFindPrev = new UtinniCoreDotNet.UI.Controls.UtinniButton();
+            this.btnFindNext = new UtinniCoreDotNet.UI.Controls.UtinniButton();
+            this.txtReplace = new UtinniCoreDotNet.UI.Controls.UtinniTextbox();
+            this.btnReplaceOne = new UtinniCoreDotNet.UI.Controls.UtinniButton();
+            this.btnReplaceAll = new UtinniCoreDotNet.UI.Controls.UtinniButton();
+            this.tglMatchCase = new UtinniCoreDotNet.UI.Controls.UtinniToggleButton();
+            this.tglRegex = new UtinniCoreDotNet.UI.Controls.UtinniToggleButton();
+            this.btnFindClose = new UtinniCoreDotNet.UI.Controls.UtinniButton();
             this.pnlFilter = new System.Windows.Forms.Panel();
+            this.lblFilter = new UtinniCoreDotNet.UI.Controls.UtinniLabel();
+            this.txtFilter = new UtinniCoreDotNet.UI.Controls.UtinniTextbox();
+            this.lblFilterCount = new UtinniCoreDotNet.UI.Controls.UtinniLabel();
+            this.btnClearFilter = new UtinniCoreDotNet.UI.Controls.UtinniButton();
             this.gridSurface = new TJT.UI.Controls.ThemedDataGridView();
             this.colId = new System.Windows.Forms.DataGridViewTextBoxColumn();
             this.colKey = new System.Windows.Forms.DataGridViewTextBoxColumn();
@@ -300,19 +314,144 @@ namespace TJT.UI.Forms
             this.toolbar.Controls.Add(this.btnSave);
             this.toolbar.Controls.Add(this.btnOpen);           // leftmost
             //
-            // pnlFindReplace (Dock.Top, 32px, hidden — Plan 10-04 fills + toggles it)
+            // pnlFindReplace (Dock.Top, 32px, hidden — toggled by Find/Replace, Plan 10-04)
             //
             this.pnlFindReplace.Dock = System.Windows.Forms.DockStyle.Top;
             this.pnlFindReplace.Height = 32;
             this.pnlFindReplace.Visible = false;
             this.pnlFindReplace.Name = "pnlFindReplace";
             //
-            // pnlFilter (Dock.Top, 28px, hidden — Plan 10-04 fills + toggles it)
+            // txtFind
+            //
+            this.txtFind.Location = new System.Drawing.Point(6, 5);
+            this.txtFind.Size = new System.Drawing.Size(240, 22);
+            this.txtFind.Name = "txtFind";
+            //
+            // lblFindCount
+            //
+            this.lblFindCount.Location = new System.Drawing.Point(252, 8);
+            this.lblFindCount.AutoSize = false;
+            this.lblFindCount.Size = new System.Drawing.Size(60, 18);
+            this.lblFindCount.Name = "lblFindCount";
+            this.lblFindCount.Text = "0 / 0";
+            //
+            // btnFindPrev
+            //
+            this.btnFindPrev.Location = new System.Drawing.Point(318, 5);
+            this.btnFindPrev.Size = new System.Drawing.Size(28, 22);
+            this.btnFindPrev.Name = "btnFindPrev";
+            this.btnFindPrev.Text = "◀";
+            this.btnFindPrev.UseVisualStyleBackColor = true;
+            //
+            // btnFindNext
+            //
+            this.btnFindNext.Location = new System.Drawing.Point(348, 5);
+            this.btnFindNext.Size = new System.Drawing.Size(28, 22);
+            this.btnFindNext.Name = "btnFindNext";
+            this.btnFindNext.Text = "▶";
+            this.btnFindNext.UseVisualStyleBackColor = true;
+            //
+            // txtReplace (hidden until Replace pane is toggled)
+            //
+            this.txtReplace.Location = new System.Drawing.Point(384, 5);
+            this.txtReplace.Size = new System.Drawing.Size(240, 22);
+            this.txtReplace.Name = "txtReplace";
+            this.txtReplace.Visible = false;
+            //
+            // btnReplaceOne
+            //
+            this.btnReplaceOne.Location = new System.Drawing.Point(628, 5);
+            this.btnReplaceOne.Size = new System.Drawing.Size(70, 22);
+            this.btnReplaceOne.Name = "btnReplaceOne";
+            this.btnReplaceOne.Text = "Replace";
+            this.btnReplaceOne.Visible = false;
+            this.btnReplaceOne.UseVisualStyleBackColor = true;
+            //
+            // btnReplaceAll
+            //
+            this.btnReplaceAll.Location = new System.Drawing.Point(700, 5);
+            this.btnReplaceAll.Size = new System.Drawing.Size(80, 22);
+            this.btnReplaceAll.Name = "btnReplaceAll";
+            this.btnReplaceAll.Text = "Replace all";
+            this.btnReplaceAll.Visible = false;
+            this.btnReplaceAll.UseVisualStyleBackColor = true;
+            //
+            // tglMatchCase
+            //
+            this.tglMatchCase.Location = new System.Drawing.Point(790, 6);
+            this.tglMatchCase.Size = new System.Drawing.Size(36, 20);
+            this.tglMatchCase.Name = "tglMatchCase";
+            this.tglMatchCase.Text = "Aa";
+            this.tglMatchCase.UseVisualStyleBackColor = true;
+            //
+            // tglRegex
+            //
+            this.tglRegex.Location = new System.Drawing.Point(828, 6);
+            this.tglRegex.Size = new System.Drawing.Size(36, 20);
+            this.tglRegex.Name = "tglRegex";
+            this.tglRegex.Text = ".*";
+            this.tglRegex.UseVisualStyleBackColor = true;
+            //
+            // btnFindClose
+            //
+            this.btnFindClose.Location = new System.Drawing.Point(872, 5);
+            this.btnFindClose.Size = new System.Drawing.Size(28, 22);
+            this.btnFindClose.Name = "btnFindClose";
+            this.btnFindClose.Text = "✕";
+            this.btnFindClose.UseVisualStyleBackColor = true;
+            //
+            this.pnlFindReplace.Controls.Add(this.txtFind);
+            this.pnlFindReplace.Controls.Add(this.lblFindCount);
+            this.pnlFindReplace.Controls.Add(this.btnFindPrev);
+            this.pnlFindReplace.Controls.Add(this.btnFindNext);
+            this.pnlFindReplace.Controls.Add(this.txtReplace);
+            this.pnlFindReplace.Controls.Add(this.btnReplaceOne);
+            this.pnlFindReplace.Controls.Add(this.btnReplaceAll);
+            this.pnlFindReplace.Controls.Add(this.tglMatchCase);
+            this.pnlFindReplace.Controls.Add(this.tglRegex);
+            this.pnlFindReplace.Controls.Add(this.btnFindClose);
+            //
+            // pnlFilter (Dock.Top, 28px, hidden — toggled by Filter / Ctrl+L, Plan 10-04)
             //
             this.pnlFilter.Dock = System.Windows.Forms.DockStyle.Top;
             this.pnlFilter.Height = 28;
             this.pnlFilter.Visible = false;
             this.pnlFilter.Name = "pnlFilter";
+            //
+            // lblFilter
+            //
+            this.lblFilter.Location = new System.Drawing.Point(6, 5);
+            this.lblFilter.AutoSize = false;
+            this.lblFilter.Size = new System.Drawing.Size(40, 18);
+            this.lblFilter.Name = "lblFilter";
+            this.lblFilter.Text = "Filter:";
+            //
+            // txtFilter
+            //
+            this.txtFilter.Location = new System.Drawing.Point(50, 3);
+            this.txtFilter.Size = new System.Drawing.Size(360, 22);
+            this.txtFilter.Name = "txtFilter";
+            //
+            // lblFilterCount
+            //
+            this.lblFilterCount.Location = new System.Drawing.Point(418, 5);
+            this.lblFilterCount.AutoSize = false;
+            this.lblFilterCount.Size = new System.Drawing.Size(110, 18);
+            this.lblFilterCount.Name = "lblFilterCount";
+            this.lblFilterCount.Text = "";
+            //
+            // btnClearFilter
+            //
+            this.btnClearFilter.Location = new System.Drawing.Point(532, 3);
+            this.btnClearFilter.Size = new System.Drawing.Size(28, 22);
+            this.btnClearFilter.Name = "btnClearFilter";
+            this.btnClearFilter.Text = "✕";
+            this.btnClearFilter.UseVisualStyleBackColor = true;
+            //
+            this.pnlFilter.Controls.Add(this.lblFilter);
+            this.pnlFilter.Controls.Add(this.txtFilter);
+            this.pnlFilter.Controls.Add(this.lblFilterCount);
+            this.pnlFilter.Controls.Add(this.btnClearFilter);
             //
             // gridSurface (Dock.Fill — ThemedDataGridView; lblEmptyState overlays it)
             //
@@ -342,7 +481,7 @@ namespace TJT.UI.Forms
             this.colKey.Name = "colKey";
             this.colKey.FillWeight = 35F;
             this.colKey.AutoSizeMode = System.Windows.Forms.DataGridViewAutoSizeColumnMode.Fill;
-            this.colKey.SortMode = System.Windows.Forms.DataGridViewColumnSortMode.NotSortable;
+            this.colKey.SortMode = System.Windows.Forms.DataGridViewColumnSortMode.Automatic;
             //
             // colText (editable; UTF-16LE verbatim, multi-line — no validation/transformation)
             //
@@ -350,7 +489,7 @@ namespace TJT.UI.Forms
             this.colText.Name = "colText";
             this.colText.FillWeight = 65F;
             this.colText.AutoSizeMode = System.Windows.Forms.DataGridViewAutoSizeColumnMode.Fill;
-            this.colText.SortMode = System.Windows.Forms.DataGridViewColumnSortMode.NotSortable;
+            this.colText.SortMode = System.Windows.Forms.DataGridViewColumnSortMode.Automatic;
             this.colText.DefaultCellStyle.WrapMode = System.Windows.Forms.DataGridViewTriState.True;
             //
             // lblEmptyState (centered dimmed empty-state copy on top of the grid)
@@ -446,7 +585,21 @@ namespace TJT.UI.Forms
         private UtinniCoreDotNet.UI.Controls.UtinniLabel lblReloadBadge;
         private UtinniCoreDotNet.UI.Controls.UtinniLabel lblDirty;
         private System.Windows.Forms.Panel pnlFindReplace;
+        private UtinniCoreDotNet.UI.Controls.UtinniTextbox txtFind;
+        private UtinniCoreDotNet.UI.Controls.UtinniLabel lblFindCount;
+        private UtinniCoreDotNet.UI.Controls.UtinniButton btnFindPrev;
+        private UtinniCoreDotNet.UI.Controls.UtinniButton btnFindNext;
+        private UtinniCoreDotNet.UI.Controls.UtinniTextbox txtReplace;
+        private UtinniCoreDotNet.UI.Controls.UtinniButton btnReplaceOne;
+        private UtinniCoreDotNet.UI.Controls.UtinniButton btnReplaceAll;
+        private UtinniCoreDotNet.UI.Controls.UtinniToggleButton tglMatchCase;
+        private UtinniCoreDotNet.UI.Controls.UtinniToggleButton tglRegex;
+        private UtinniCoreDotNet.UI.Controls.UtinniButton btnFindClose;
         private System.Windows.Forms.Panel pnlFilter;
+        private UtinniCoreDotNet.UI.Controls.UtinniLabel lblFilter;
+        private UtinniCoreDotNet.UI.Controls.UtinniTextbox txtFilter;
+        private UtinniCoreDotNet.UI.Controls.UtinniLabel lblFilterCount;
+        private UtinniCoreDotNet.UI.Controls.UtinniButton btnClearFilter;
         private TJT.UI.Controls.ThemedDataGridView gridSurface;
         private System.Windows.Forms.DataGridViewTextBoxColumn colId;
         private System.Windows.Forms.DataGridViewTextBoxColumn colKey;

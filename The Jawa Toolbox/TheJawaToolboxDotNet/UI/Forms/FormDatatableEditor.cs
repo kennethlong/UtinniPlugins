@@ -28,6 +28,7 @@ using System.Drawing;
 using System.Globalization;
 using System.IO;
 using System.Linq;
+using System.Text.RegularExpressions;
 using System.Threading.Tasks;
 using System.Windows.Forms;
 using TJT.Saving;
@@ -111,6 +112,18 @@ namespace TJT.UI.Forms
         private bool saveInFlight;
         private string lastSavedPath;
 
+        // ── Plan 09-06: Find/Replace pane state (D-07) ───────────────────────
+        private readonly List<(int row, int col)> currentMatches = new List<(int, int)>();
+        private int currentMatchIndex = -1;
+        private bool findMatchCase;
+        private bool findRegex;
+        private bool findIncludeComments;
+        private Timer findDebounceTimer;
+
+        // ── Plan 09-06: DT_Comment frozen-row toggle state ───────────────────
+        private bool editCommentRows;
+        private int firstCommentRowIndex = -1;
+
         public FormDatatableEditor(IEditorPlugin editorPlugin)
         {
             InitializeComponent();
@@ -149,19 +162,44 @@ namespace TJT.UI.Forms
             // Default provenance is Unknown (W-3 contract). Plan 09-05 open paths override.
             Source = OpenSource.Unknown.Instance;
 
-            // Deferred-feature toolbar buttons ship DISABLED with explanatory tooltips (iter-2 item
-            // 4 — NOT click handlers that throw). Subsequent plans enable + wire them. Plan 09-05
-            // wires Save▾ (btnSave is the drop-down anchor) so its tooltip is no longer the deferred copy.
+            // Plan 09-06: CSV import/export + Find/Replace toolbar buttons are now WIRED + enabled.
             toolTip.SetToolTip(btnSave, "Save the current datatable (choose a target).");
-            toolTip.SetToolTip(btnImportCsv, "CSV import is wired by a later step (Plan 09-06).");
-            toolTip.SetToolTip(btnExportCsv, "CSV export is wired by a later step (Plan 09-06).");
-            toolTip.SetToolTip(btnFind, "Find is wired by a later step (Plan 09-06).");
-            toolTip.SetToolTip(btnReplace, "Replace is wired by a later step (Plan 09-06).");
+            toolTip.SetToolTip(btnImportCsv, "Import a CSV/TSV file as a delta (preview before apply).");
+            toolTip.SetToolTip(btnExportCsv, "Export the current datatable to CSV/TSV.");
+            toolTip.SetToolTip(btnFind, "Find (Ctrl+F)");
+            toolTip.SetToolTip(btnReplace, "Replace (Ctrl+H)");
+            toolTip.SetToolTip(btnFindPrev, "Find previous (Shift+F3)");
+            toolTip.SetToolTip(btnFindNext, "Find next (F3)");
+            toolTip.SetToolTip(btnFindClose, "Close (Esc)");
+            toolTip.SetToolTip(tglEditCommentRows, "First comment row is frozen as a header. Toggle to edit.");
 
             // The only ENABLED, functional toolbar buttons in Plan 09-03 are Open… and Reload.
             btnOpen.Click += OnOpenClicked;
             btnReload.Click += OnReloadClicked;
             btnSave.Click += OnSaveButtonClick;
+
+            // Plan 09-06: CSV + Find/Replace + frozen-comment wiring.
+            btnImportCsv.Enabled = false; // enabled on LoadDocument
+            btnExportCsv.Enabled = false;
+            btnFind.Enabled = false;
+            btnReplace.Enabled = false;
+            btnImportCsv.Click += OnImportCsvClicked;
+            btnExportCsv.Click += OnExportCsvClicked;
+            btnFind.Click += (s, e) => ToggleFindPane(false);
+            btnReplace.Click += (s, e) => ToggleFindPane(true);
+            btnFindPrev.Click += (s, e) => FindPrev();
+            btnFindNext.Click += (s, e) => FindNext();
+            btnFindClose.Click += (s, e) => CollapseFindPane();
+            btnReplaceOne.Click += OnReplaceOneClicked;
+            btnReplaceAll.Click += OnReplaceAllClicked;
+            tglMatchCase.CheckedChanged += (s, e) => { findMatchCase = tglMatchCase.Checked; RecomputeMatches(); };
+            tglRegex.CheckedChanged += (s, e) => { findRegex = tglRegex.Checked; RecomputeMatches(); };
+            tglIncludeComments.CheckedChanged += (s, e) => { findIncludeComments = tglIncludeComments.Checked; RecomputeMatches(); };
+            tglEditCommentRows.CheckedChanged += OnEditCommentRowsToggled;
+
+            findDebounceTimer = new Timer { Interval = 200 };
+            findDebounceTimer.Tick += OnFindDebounceTick;
+            txtFind.TextChanged += (s, e) => { findDebounceTimer.Stop(); findDebounceTimer.Start(); };
 
             // Plan 09-04: controller-backed undo/redo + structural ops. The buttons stay DISABLED until
             // a document is bound (UpdateUndoRedoState / OnEditApplied flip them); their handlers route
@@ -249,6 +287,31 @@ namespace TJT.UI.Forms
 
             EnsureGridContextMenu();
 
+            // Plan 09-06: column-click sort (D-09) — built-in DataGridView view-only sort + the LOCKED
+            // hover tooltip. The model serialization NEVER iterates the view order (DataTableWriter
+            // takes the MutableDataTableDocument directly — Sort_DoesNotMutateModelOrder fact + grep gate).
+            for (int i = 0; i < gridSurface.Columns.Count; i++)
+            {
+                gridSurface.Columns[i].SortMode = DataGridViewColumnSortMode.Automatic;
+                gridSurface.Columns[i].ToolTipText = "View order only — save serializes physical row order.";
+            }
+
+            // Plan 09-06: CSV + Find/Replace toolbar buttons become functional once a document is bound.
+            btnImportCsv.Enabled = true;
+            btnExportCsv.Enabled = true;
+            btnFind.Enabled = true;
+            btnReplace.Enabled = true;
+
+            // Plan 09-06: DT_Comment frozen-row toggle. Load the persisted editCommentRows preference,
+            // locate the first comment row, and apply the frozen/dimmed treatment.
+            editCommentRows = ini.GetBool("DatatableEditor", "editCommentRows");
+            tglEditCommentRows.Enabled = true;
+            tglEditCommentRows.Checked = editCommentRows;
+            ApplyCommentRowFreeze();
+
+            // A fresh load clears any active Find state.
+            ResetFindState();
+
             lblEmptyState.Visible = false;
             UpdateUndoRedoState();
             UpdateDirtyVisuals();
@@ -320,6 +383,348 @@ namespace TJT.UI.Forms
                 .Select(c => DatatableColumnFactory.Build(c.Name, c.ColumnType))
                 .ToList();
             gridSurface.BindMutable(mutable, columns);
+
+            // Plan 09-06: re-apply the view-only sort mode + LOCKED tooltip + frozen-comment treatment
+            // that a fresh BindMutable resets.
+            for (int i = 0; i < gridSurface.Columns.Count; i++)
+            {
+                gridSurface.Columns[i].SortMode = DataGridViewColumnSortMode.Automatic;
+                gridSurface.Columns[i].ToolTipText = "View order only — save serializes physical row order.";
+            }
+            ApplyCommentRowFreeze();
+        }
+
+        // ── Plan 09-06: Find/Replace pane (D-07) ─────────────────────────────
+
+        // Toggle the Find pane (or extend it into the Replace pane). Showing it focuses txtFind.
+        private void ToggleFindPane(bool withReplace)
+        {
+            if (!pnlFindReplace.Visible)
+            {
+                pnlFindReplace.Visible = true;
+            }
+            txtReplace.Visible = withReplace;
+            btnReplaceOne.Visible = withReplace;
+            btnReplaceAll.Visible = withReplace;
+            txtFind.Focus();
+            txtFind.SelectAll();
+        }
+
+        private void CollapseFindPane()
+        {
+            pnlFindReplace.Visible = false;
+            ResetFindState();
+        }
+
+        private void ResetFindState()
+        {
+            currentMatches.Clear();
+            currentMatchIndex = -1;
+            lblFindCount.Text = "0 / 0";
+            lblFindCount.ForeColor = Colors.FontDisabled();
+            gridSurface.SetSearchMatches(currentMatches.Select(m => new KeyValuePair<int, int>(m.row, m.col)), -1, -1);
+        }
+
+        private void OnFindDebounceTick(object sender, EventArgs e)
+        {
+            findDebounceTimer.Stop();
+            RecomputeMatches();
+        }
+
+        // Rebuild the match set from the model per the scope toggles. The regex path uses a 2s
+        // matchTimeout (iter-2 item 10) so a catastrophic pattern surfaces a red status instead of
+        // freezing the UI thread.
+        private void RecomputeMatches()
+        {
+            currentMatches.Clear();
+            currentMatchIndex = -1;
+
+            if (dtDocument == null || string.IsNullOrEmpty(txtFind.Text))
+            {
+                lblFindCount.Text = "0 / 0";
+                lblFindCount.ForeColor = Colors.FontDisabled();
+                gridSurface.SetSearchMatches(currentMatches.Select(mk => new KeyValuePair<int, int>(mk.row, mk.col)), -1, -1);
+                return;
+            }
+
+            string query = txtFind.Text;
+            Regex regex = null;
+            if (findRegex)
+            {
+                try
+                {
+                    RegexOptions opts = findMatchCase ? RegexOptions.None : RegexOptions.IgnoreCase;
+                    regex = new Regex(query, opts, TimeSpan.FromSeconds(2));
+                }
+                catch (ArgumentException)
+                {
+                    lblFindCount.Text = "invalid pattern";
+                    lblFindCount.ForeColor = Colors.Secondary();
+                    return;
+                }
+            }
+
+            MutableDataTableDocument m = dtDocument.Mutable;
+            try
+            {
+                for (int r = 0; r < m.Rows.Count; r++)
+                {
+                    var cells = m.Rows[r].Cells;
+                    for (int c = 0; c < m.Columns.Count && c < cells.Count; c++)
+                    {
+                        DataTableColumnType ct = m.Columns[c].ColumnType;
+                        if (!findIncludeComments && ct.Type == DataType.Comment) continue;
+
+                        string text = CsvCellCoercion.SerializeCellToCsv(cells[c], ct);
+                        bool hit = regex != null
+                            ? regex.IsMatch(text)
+                            : text.IndexOf(query, findMatchCase ? StringComparison.Ordinal : StringComparison.OrdinalIgnoreCase) >= 0;
+                        if (hit) currentMatches.Add((r, c));
+                    }
+                }
+            }
+            catch (RegexMatchTimeoutException)
+            {
+                currentMatches.Clear();
+                lblFindCount.Text = "pattern too slow — simplify";
+                lblFindCount.ForeColor = Colors.Secondary();
+                gridSurface.SetSearchMatches(currentMatches.Select(mm => new KeyValuePair<int, int>(mm.row, mm.col)), -1, -1);
+                return;
+            }
+
+            if (currentMatches.Count > 0)
+            {
+                currentMatchIndex = 0;
+                JumpToCurrentMatch();
+            }
+
+            UpdateFindCount();
+            gridSurface.SetSearchMatches(
+                currentMatches.Select(mm => new KeyValuePair<int, int>(mm.row, mm.col)),
+                currentMatchIndex >= 0 ? currentMatches[currentMatchIndex].row : -1,
+                currentMatchIndex >= 0 ? currentMatches[currentMatchIndex].col : -1);
+        }
+
+        private void UpdateFindCount()
+        {
+            if (currentMatches.Count == 0)
+            {
+                lblFindCount.Text = "0 / 0";
+                lblFindCount.ForeColor = Colors.FontDisabled();
+            }
+            else
+            {
+                lblFindCount.Text = (currentMatchIndex + 1) + " / " + currentMatches.Count;
+                lblFindCount.ForeColor = Colors.Font();
+            }
+        }
+
+        private void JumpToCurrentMatch()
+        {
+            if (currentMatchIndex < 0 || currentMatchIndex >= currentMatches.Count) return;
+            var m = currentMatches[currentMatchIndex];
+            if (m.row < gridSurface.Rows.Count && m.col < gridSurface.Columns.Count)
+            {
+                gridSurface.CurrentCell = gridSurface.Rows[m.row].Cells[m.col];
+            }
+            gridSurface.SetSearchMatches(
+                currentMatches.Select(mm => new KeyValuePair<int, int>(mm.row, mm.col)), m.row, m.col);
+        }
+
+        private void FindNext()
+        {
+            if (currentMatches.Count == 0) return;
+            currentMatchIndex = (currentMatchIndex + 1) % currentMatches.Count;
+            JumpToCurrentMatch();
+            UpdateFindCount();
+        }
+
+        private void FindPrev()
+        {
+            if (currentMatches.Count == 0) return;
+            currentMatchIndex = (currentMatchIndex - 1 + currentMatches.Count) % currentMatches.Count;
+            JumpToCurrentMatch();
+            UpdateFindCount();
+        }
+
+        // Replace the current match's cell via controller.Apply(EditCellValue) so the per-column type
+        // validation (D-03) runs through the same parse-back path; a type-invalid replacement is blocked.
+        private void OnReplaceOneClicked(object sender, EventArgs e)
+        {
+            if (controller == null || dtDocument == null) return;
+            if (currentMatchIndex < 0 || currentMatchIndex >= currentMatches.Count) return;
+            var m = currentMatches[currentMatchIndex];
+            if (ReplaceCellValue(m.row, m.col, txtReplace.Text))
+            {
+                RecomputeMatches();
+            }
+        }
+
+        // Replace all matches as a single transaction (one undo entry) via ApplyCsvImport over the
+        // valid replacements. Type-invalid replacements are counted + reported, not applied.
+        private void OnReplaceAllClicked(object sender, EventArgs e)
+        {
+            if (controller == null || dtDocument == null || currentMatches.Count == 0) return;
+
+            var plan = new CsvImportPlan();
+            int invalid = 0;
+            string replacement = txtReplace.Text;
+            MutableDataTableDocument m = dtDocument.Mutable;
+            foreach (var match in currentMatches)
+            {
+                DataTableColumnType ct = m.Columns[match.col].ColumnType;
+                DataTableCellValue coerced;
+                if (ct.TryCoerceCellValue(replacement, out coerced))
+                {
+                    plan.Changes.Add(new EditCellPatch(match.row, match.col, coerced));
+                }
+                else
+                {
+                    invalid++;
+                }
+            }
+
+            if (plan.Changes.Count > 0)
+            {
+                controller.Apply(DatatableEditCommands.ApplyCsvImport(dtDocument.Mutable, plan));
+            }
+
+            lblStatus.Text = plan.Changes.Count + " replaced"
+                + (invalid > 0 ? (", " + invalid + " skipped (type-invalid)") : "");
+            lblStatus.ForeColor = invalid > 0 ? Color.Red : Colors.Font();
+            RecomputeMatches();
+        }
+
+        private bool ReplaceCellValue(int rowIndex, int colIndex, string replacement)
+        {
+            MutableDataTableDocument m = dtDocument.Mutable;
+            if (rowIndex < 0 || rowIndex >= m.Rows.Count) return false;
+            if (colIndex < 0 || colIndex >= m.Columns.Count) return false;
+
+            MutableDataTableColumn column = m.Columns[colIndex];
+            DataTableCellValue coerced;
+            if (!column.ColumnType.TryCoerceCellValue(replacement, out coerced))
+            {
+                lblStatus.Text = "Replacement \"" + replacement + "\" cannot convert to " + column.ColumnType.TypeSpec + ".";
+                lblStatus.ForeColor = Color.Red;
+                return false;
+            }
+
+            controller.Apply(DatatableEditCommands.EditCellValue(m.Rows[rowIndex].Cells[colIndex], coerced));
+            return true;
+        }
+
+        // ── Plan 09-06: CSV Import / Export ──────────────────────────────────
+
+        private async void OnImportCsvClicked(object sender, EventArgs e)
+        {
+            if (dtDocument == null || controller == null) return;
+            using (var ofd = new OpenFileDialog())
+            {
+                ofd.Title = "Import CSV…";
+                ofd.Filter = "CSV files (*.csv)|*.csv|TSV files (*.tsv)|*.tsv|All files (*.*)|*.*";
+                if (ofd.ShowDialog(this) != DialogResult.OK) return;
+
+                lblStatus.Text = "Importing CSV…";
+                lblStatus.ForeColor = Colors.Font();
+                try
+                {
+                    bool applied = await DatatableCsvSerializer.ImportAsync(
+                        dtDocument.Mutable, ofd.FileName, controller, this,
+                        Path.GetFileName(ofd.FileName), displayName ?? "datatable");
+                    if (applied)
+                    {
+                        RebindGrid();
+                        lblStatus.Text = "Imported " + Path.GetFileName(ofd.FileName);
+                        lblStatus.ForeColor = Colors.Font();
+                    }
+                    else
+                    {
+                        lblStatus.Text = "CSV import cancelled.";
+                        lblStatus.ForeColor = Colors.Font();
+                    }
+                }
+                catch (Exception ex)
+                {
+                    lblStatus.Text = "CSV import failed: " + ex.Message;
+                    lblStatus.ForeColor = Color.Red;
+                }
+            }
+        }
+
+        private void OnExportCsvClicked(object sender, EventArgs e)
+        {
+            if (dtDocument == null) return;
+            using (var sfd = new SaveFileDialog())
+            {
+                sfd.Title = "Export CSV…";
+                sfd.Filter = "CSV files (*.csv)|*.csv|TSV files (*.tsv)|*.tsv";
+                sfd.FileName = !string.IsNullOrEmpty(displayName)
+                    ? Path.GetFileNameWithoutExtension(displayName) + ".csv"
+                    : "datatable.csv";
+                if (sfd.ShowDialog(this) != DialogResult.OK) return;
+                try
+                {
+                    DatatableCsvSerializer.Export(dtDocument.Mutable, sfd.FileName, includeTypeRow: true);
+                    lblStatus.Text = "Exported " + dtDocument.Mutable.Rows.Count + " rows × "
+                        + dtDocument.Mutable.Columns.Count + " cols to " + Path.GetFileName(sfd.FileName);
+                    lblStatus.ForeColor = Colors.Font();
+                }
+                catch (Exception ex)
+                {
+                    lblStatus.Text = "CSV export failed: " + ex.Message;
+                    lblStatus.ForeColor = Color.Red;
+                }
+            }
+        }
+
+        // ── Plan 09-06: DT_Comment frozen-row toggle ─────────────────────────
+
+        private void OnEditCommentRowsToggled(object sender, EventArgs e)
+        {
+            editCommentRows = tglEditCommentRows.Checked;
+            ini.AddSetting("DatatableEditor", "editCommentRows", editCommentRows ? "1" : "0", UtINI.Value.Types.VtBool);
+            try { ini.Save(); } catch { /* persistence best-effort */ }
+            ApplyCommentRowFreeze();
+        }
+
+        // Locate the first DT_Comment row (a row in a doc that has a comment column) and apply the
+        // frozen-header treatment unless editCommentRows is ON. When frozen, the row is non-editable +
+        // dimmed; when editable, it renders normally.
+        private void ApplyCommentRowFreeze()
+        {
+            firstCommentRowIndex = -1;
+            if (dtDocument == null) return;
+
+            MutableDataTableDocument m = dtDocument.Mutable;
+            int commentColIndex = -1;
+            for (int c = 0; c < m.Columns.Count; c++)
+            {
+                if (m.Columns[c].ColumnType.Type == DataType.Comment)
+                {
+                    commentColIndex = c;
+                    break;
+                }
+            }
+
+            if (commentColIndex < 0 || m.Rows.Count == 0)
+            {
+                gridSurface.SetFrozenCommentRow(-1);
+                return;
+            }
+
+            // The first row is treated as the comment/header row when a comment column exists.
+            firstCommentRowIndex = 0;
+            bool freeze = !editCommentRows;
+
+            if (firstCommentRowIndex < gridSurface.Rows.Count)
+            {
+                DataGridViewRow gridRow = gridSurface.Rows[firstCommentRowIndex];
+                gridRow.Frozen = freeze;
+                gridRow.ReadOnly = freeze;
+            }
+
+            gridSurface.SetFrozenCommentRow(freeze ? firstCommentRowIndex : -1);
         }
 
         // ── Grid context menu (Remove/Move row + Remove/Move/Rename/ChangeType column) ──
@@ -539,6 +944,32 @@ namespace TJT.UI.Forms
             if (keyData == (Keys.Control | Keys.S))
             {
                 // ToDo Plan 09-05: trigger the default save target. No-op until save targets ship.
+                return true;
+            }
+            // Plan 09-06: Find/Replace pane bindings.
+            if (keyData == (Keys.Control | Keys.F))
+            {
+                if (dtDocument != null) ToggleFindPane(false);
+                return true;
+            }
+            if (keyData == (Keys.Control | Keys.H))
+            {
+                if (dtDocument != null) ToggleFindPane(true);
+                return true;
+            }
+            if (keyData == Keys.F3)
+            {
+                if (pnlFindReplace.Visible) FindNext();
+                return true;
+            }
+            if (keyData == (Keys.Shift | Keys.F3))
+            {
+                if (pnlFindReplace.Visible) FindPrev();
+                return true;
+            }
+            if (keyData == Keys.Escape && pnlFindReplace.Visible)
+            {
+                CollapseFindPane();
                 return true;
             }
             return base.ProcessCmdKey(ref msg, keyData);

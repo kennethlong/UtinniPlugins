@@ -58,12 +58,25 @@ namespace TJT.UI.Forms
             this.btnFind = new UtinniCoreDotNet.UI.Controls.UtinniButton();
             this.btnReplace = new UtinniCoreDotNet.UI.Controls.UtinniButton();
             this.sep5 = new System.Windows.Forms.Panel();
+            this.tglEditCommentRows = new UtinniCoreDotNet.UI.Controls.UtinniToggleButton();
+            this.sep7 = new System.Windows.Forms.Panel();
             this.btnReload = new UtinniCoreDotNet.UI.Controls.UtinniButton();
             this.sep6 = new System.Windows.Forms.Panel();
             this.btnResolveCascade = new UtinniCoreDotNet.UI.Controls.UtinniButton();
             this.lblReloadBadge = new UtinniCoreDotNet.UI.Controls.UtinniLabel();
             this.lblDirty = new UtinniCoreDotNet.UI.Controls.UtinniLabel();
             this.pnlFindReplace = new System.Windows.Forms.Panel();
+            this.txtFind = new UtinniCoreDotNet.UI.Controls.UtinniTextbox();
+            this.lblFindCount = new UtinniCoreDotNet.UI.Controls.UtinniLabel();
+            this.btnFindPrev = new UtinniCoreDotNet.UI.Controls.UtinniButton();
+            this.btnFindNext = new UtinniCoreDotNet.UI.Controls.UtinniButton();
+            this.txtReplace = new UtinniCoreDotNet.UI.Controls.UtinniTextbox();
+            this.btnReplaceOne = new UtinniCoreDotNet.UI.Controls.UtinniButton();
+            this.btnReplaceAll = new UtinniCoreDotNet.UI.Controls.UtinniButton();
+            this.tglMatchCase = new UtinniCoreDotNet.UI.Controls.UtinniToggleButton();
+            this.tglRegex = new UtinniCoreDotNet.UI.Controls.UtinniToggleButton();
+            this.tglIncludeComments = new UtinniCoreDotNet.UI.Controls.UtinniToggleButton();
+            this.btnFindClose = new UtinniCoreDotNet.UI.Controls.UtinniButton();
             this.gridSurface = new TJT.UI.Controls.ThemedDataGridView();
             this.lblEmptyState = new UtinniCoreDotNet.UI.Controls.UtinniLabel();
             this.pnlStatus = new System.Windows.Forms.Panel();
@@ -220,6 +233,21 @@ namespace TJT.UI.Forms
             this.btnReload.UseDisableColor = true;
             this.btnReload.UseVisualStyleBackColor = true;
             //
+            // sep7
+            //
+            this.sep7.Dock = System.Windows.Forms.DockStyle.Left;
+            this.sep7.Width = 4;
+            this.sep7.Name = "sep7";
+            //
+            // tglEditCommentRows (DISABLED until a document is bound — Plan 09-06 D-comment toggle)
+            //
+            this.tglEditCommentRows.Dock = System.Windows.Forms.DockStyle.Left;
+            this.tglEditCommentRows.Width = 130;
+            this.tglEditCommentRows.Name = "tglEditCommentRows";
+            this.tglEditCommentRows.Text = "Edit comment rows";
+            this.tglEditCommentRows.Enabled = false;
+            this.tglEditCommentRows.UseVisualStyleBackColor = true;
+            //
             // sep6
             //
             this.sep6.Dock = System.Windows.Forms.DockStyle.Left;
@@ -263,6 +291,8 @@ namespace TJT.UI.Forms
             this.toolbar.Controls.Add(this.btnResolveCascade); // Left (rightmost of left cluster)
             this.toolbar.Controls.Add(this.sep6);
             this.toolbar.Controls.Add(this.btnReload);        // Left
+            this.toolbar.Controls.Add(this.sep7);
+            this.toolbar.Controls.Add(this.tglEditCommentRows); // Left (D-comment toggle)
             this.toolbar.Controls.Add(this.sep5);
             this.toolbar.Controls.Add(this.btnReplace);
             this.toolbar.Controls.Add(this.btnFind);
@@ -285,6 +315,105 @@ namespace TJT.UI.Forms
             this.pnlFindReplace.Height = 32;
             this.pnlFindReplace.Visible = false;
             this.pnlFindReplace.Name = "pnlFindReplace";
+            //
+            // txtFind
+            //
+            this.txtFind.Location = new System.Drawing.Point(6, 5);
+            this.txtFind.Size = new System.Drawing.Size(240, 22);
+            this.txtFind.Name = "txtFind";
+            //
+            // lblFindCount
+            //
+            this.lblFindCount.Location = new System.Drawing.Point(252, 8);
+            this.lblFindCount.AutoSize = false;
+            this.lblFindCount.Size = new System.Drawing.Size(60, 18);
+            this.lblFindCount.Name = "lblFindCount";
+            this.lblFindCount.Text = "0 / 0";
+            //
+            // btnFindPrev
+            //
+            this.btnFindPrev.Location = new System.Drawing.Point(318, 5);
+            this.btnFindPrev.Size = new System.Drawing.Size(28, 22);
+            this.btnFindPrev.Name = "btnFindPrev";
+            this.btnFindPrev.Text = "◀";
+            this.btnFindPrev.UseVisualStyleBackColor = true;
+            //
+            // btnFindNext
+            //
+            this.btnFindNext.Location = new System.Drawing.Point(348, 5);
+            this.btnFindNext.Size = new System.Drawing.Size(28, 22);
+            this.btnFindNext.Name = "btnFindNext";
+            this.btnFindNext.Text = "▶";
+            this.btnFindNext.UseVisualStyleBackColor = true;
+            //
+            // txtReplace (hidden until Replace pane is toggled)
+            //
+            this.txtReplace.Location = new System.Drawing.Point(384, 5);
+            this.txtReplace.Size = new System.Drawing.Size(240, 22);
+            this.txtReplace.Name = "txtReplace";
+            this.txtReplace.Visible = false;
+            //
+            // btnReplaceOne
+            //
+            this.btnReplaceOne.Location = new System.Drawing.Point(628, 5);
+            this.btnReplaceOne.Size = new System.Drawing.Size(70, 22);
+            this.btnReplaceOne.Name = "btnReplaceOne";
+            this.btnReplaceOne.Text = "Replace";
+            this.btnReplaceOne.Visible = false;
+            this.btnReplaceOne.UseVisualStyleBackColor = true;
+            //
+            // btnReplaceAll
+            //
+            this.btnReplaceAll.Location = new System.Drawing.Point(700, 5);
+            this.btnReplaceAll.Size = new System.Drawing.Size(80, 22);
+            this.btnReplaceAll.Name = "btnReplaceAll";
+            this.btnReplaceAll.Text = "Replace all";
+            this.btnReplaceAll.Visible = false;
+            this.btnReplaceAll.UseVisualStyleBackColor = true;
+            //
+            // tglMatchCase
+            //
+            this.tglMatchCase.Location = new System.Drawing.Point(790, 6);
+            this.tglMatchCase.Size = new System.Drawing.Size(36, 20);
+            this.tglMatchCase.Name = "tglMatchCase";
+            this.tglMatchCase.Text = "Aa";
+            this.tglMatchCase.UseVisualStyleBackColor = true;
+            //
+            // tglRegex
+            //
+            this.tglRegex.Location = new System.Drawing.Point(828, 6);
+            this.tglRegex.Size = new System.Drawing.Size(36, 20);
+            this.tglRegex.Name = "tglRegex";
+            this.tglRegex.Text = ".*";
+            this.tglRegex.UseVisualStyleBackColor = true;
+            //
+            // tglIncludeComments
+            //
+            this.tglIncludeComments.Location = new System.Drawing.Point(866, 6);
+            this.tglIncludeComments.Size = new System.Drawing.Size(40, 20);
+            this.tglIncludeComments.Name = "tglIncludeComments";
+            this.tglIncludeComments.Text = "Cmt";
+            this.tglIncludeComments.UseVisualStyleBackColor = true;
+            //
+            // btnFindClose
+            //
+            this.btnFindClose.Location = new System.Drawing.Point(912, 5);
+            this.btnFindClose.Size = new System.Drawing.Size(28, 22);
+            this.btnFindClose.Name = "btnFindClose";
+            this.btnFindClose.Text = "✕";
+            this.btnFindClose.UseVisualStyleBackColor = true;
+            //
+            this.pnlFindReplace.Controls.Add(this.txtFind);
+            this.pnlFindReplace.Controls.Add(this.lblFindCount);
+            this.pnlFindReplace.Controls.Add(this.btnFindPrev);
+            this.pnlFindReplace.Controls.Add(this.btnFindNext);
+            this.pnlFindReplace.Controls.Add(this.txtReplace);
+            this.pnlFindReplace.Controls.Add(this.btnReplaceOne);
+            this.pnlFindReplace.Controls.Add(this.btnReplaceAll);
+            this.pnlFindReplace.Controls.Add(this.tglMatchCase);
+            this.pnlFindReplace.Controls.Add(this.tglRegex);
+            this.pnlFindReplace.Controls.Add(this.tglIncludeComments);
+            this.pnlFindReplace.Controls.Add(this.btnFindClose);
             //
             // gridSurface (Dock.Fill — ThemedDataGridView; lblEmptyState overlays it)
             //
@@ -379,10 +508,23 @@ namespace TJT.UI.Forms
         private System.Windows.Forms.Panel sep5;
         private UtinniCoreDotNet.UI.Controls.UtinniButton btnReload;
         private System.Windows.Forms.Panel sep6;
+        private System.Windows.Forms.Panel sep7;
+        private UtinniCoreDotNet.UI.Controls.UtinniToggleButton tglEditCommentRows;
         private UtinniCoreDotNet.UI.Controls.UtinniButton btnResolveCascade;
         private UtinniCoreDotNet.UI.Controls.UtinniLabel lblReloadBadge;
         private UtinniCoreDotNet.UI.Controls.UtinniLabel lblDirty;
         private System.Windows.Forms.Panel pnlFindReplace;
+        private UtinniCoreDotNet.UI.Controls.UtinniTextbox txtFind;
+        private UtinniCoreDotNet.UI.Controls.UtinniLabel lblFindCount;
+        private UtinniCoreDotNet.UI.Controls.UtinniButton btnFindPrev;
+        private UtinniCoreDotNet.UI.Controls.UtinniButton btnFindNext;
+        private UtinniCoreDotNet.UI.Controls.UtinniTextbox txtReplace;
+        private UtinniCoreDotNet.UI.Controls.UtinniButton btnReplaceOne;
+        private UtinniCoreDotNet.UI.Controls.UtinniButton btnReplaceAll;
+        private UtinniCoreDotNet.UI.Controls.UtinniToggleButton tglMatchCase;
+        private UtinniCoreDotNet.UI.Controls.UtinniToggleButton tglRegex;
+        private UtinniCoreDotNet.UI.Controls.UtinniToggleButton tglIncludeComments;
+        private UtinniCoreDotNet.UI.Controls.UtinniButton btnFindClose;
         private TJT.UI.Controls.ThemedDataGridView gridSurface;
         private UtinniCoreDotNet.UI.Controls.UtinniLabel lblEmptyState;
         private System.Windows.Forms.Panel pnlStatus;

@@ -62,6 +62,51 @@ namespace TJT.UI.Controls
     {
         private MutableDataTableDocument boundDocument;
 
+        // Plan 09-06: search-match overlay state. The host (FormDatatableEditor) sets the current
+        // match set + the active match coords; CellFormatting paints them. A null/empty set = no
+        // search overlay (the formatter falls through to the dirty/added/needs-review states).
+        private HashSet<long> searchMatchKeys;
+        private long activeMatchKey = -1;
+
+        // Plan 09-06: index of the frozen DT_Comment header row (-1 when none / editable). When set,
+        // CellFormatting renders that row with the dimmed header treatment.
+        private int frozenCommentRowIndex = -1;
+
+        private static long CellKey(int row, int col)
+        {
+            return ((long)row << 32) | (uint)col;
+        }
+
+        /// <summary>
+        /// Sets the current Find search-match overlay (Plan 09-06). <paramref name="matches"/> is the
+        /// full match set; <paramref name="activeRow"/>/<paramref name="activeCol"/> is the currently-
+        /// focused match (rendered with a stronger accent). Pass an empty list to clear.
+        /// </summary>
+        public void SetSearchMatches(IEnumerable<KeyValuePair<int, int>> matches, int activeRow, int activeCol)
+        {
+            searchMatchKeys = new HashSet<long>();
+            if (matches != null)
+            {
+                foreach (KeyValuePair<int, int> m in matches)
+                {
+                    searchMatchKeys.Add(CellKey(m.Key, m.Value));
+                }
+            }
+            activeMatchKey = (activeRow >= 0 && activeCol >= 0) ? CellKey(activeRow, activeCol) : -1;
+            Invalidate();
+        }
+
+        /// <summary>
+        /// Sets the frozen DT_Comment header row index (Plan 09-06). Pass -1 to clear (editable). The
+        /// host also flips the underlying <see cref="DataGridViewRow.Frozen"/> + ReadOnly state; this
+        /// drives the dimmed CellFormatting treatment.
+        /// </summary>
+        public void SetFrozenCommentRow(int rowIndex)
+        {
+            frozenCommentRowIndex = rowIndex;
+            Invalidate();
+        }
+
         public ThemedDataGridView()
         {
             // 09-UI-SPEC § ThemedDataGridView token map — verbatim, all values via Colors.*().
@@ -222,6 +267,36 @@ namespace TJT.UI.Controls
 
             MutableDataTableRow row = boundDocument.Rows[e.RowIndex];
             MutableDataTableCell cell = row.Cells[e.ColumnIndex];
+
+            // Frozen DT_Comment header row (Plan 09-06): dimmed treatment, takes precedence over the
+            // dirty/added accents (a frozen comment row is not user-edited).
+            if (frozenCommentRowIndex >= 0 && e.RowIndex == frozenCommentRowIndex)
+            {
+                e.CellStyle.BackColor = Colors.PrimaryShadow();
+                e.CellStyle.ForeColor = Colors.FontDisabled();
+                return;
+            }
+
+            // Search-match overlay (Plan 09-06): accent background for matched cells; a stronger accent
+            // for the active match. Takes precedence over the dirty/added foreground tints so the user
+            // can see what Find landed on.
+            if (searchMatchKeys != null && searchMatchKeys.Count > 0)
+            {
+                long key = CellKey(e.RowIndex, e.ColumnIndex);
+                if (key == activeMatchKey)
+                {
+                    e.CellStyle.BackColor = Colors.Secondary();
+                    e.CellStyle.ForeColor = Colors.Font();
+                    return;
+                }
+                if (searchMatchKeys.Contains(key))
+                {
+                    e.CellStyle.BackColor = Colors.PrimaryHighlight();
+                    e.CellStyle.SelectionBackColor = Colors.Secondary();
+                    e.CellStyle.ForeColor = Colors.Secondary();
+                    return;
+                }
+            }
 
             if (cell.NeedsReview)
             {

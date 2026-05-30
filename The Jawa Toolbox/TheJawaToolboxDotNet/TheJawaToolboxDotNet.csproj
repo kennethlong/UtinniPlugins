@@ -90,6 +90,12 @@
     <Compile Include="UI\Forms\FormDatatableEditor.Designer.cs">
       <DependentUpon>FormDatatableEditor.cs</DependentUpon>
     </Compile>
+    <Compile Include="UI\Forms\FormStringTableEditor.cs">
+      <SubType>Form</SubType>
+    </Compile>
+    <Compile Include="UI\Forms\FormStringTableEditor.Designer.cs">
+      <DependentUpon>FormStringTableEditor.cs</DependentUpon>
+    </Compile>
     <Compile Include="UI\Forms\FormFourCcDialog.cs">
       <SubType>Form</SubType>
     </Compile>

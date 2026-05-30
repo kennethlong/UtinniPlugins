@@ -93,6 +93,18 @@ namespace TJT
                 Log.Info("Failed to create FormDatatableEditor; Datatable Editor will be unavailable: " + ex);
             }
 
+            // 10-03: register the String-table Editor in the same try/catch isolation block.
+            // GetSubPanels() stays null — the MEF SPI is NOT widened (CON-M-01/02). The TRE Browser
+            // "Open in String-table Editor" hand-off (Plan 10-05) finds this form by type in the forms list.
+            try
+            {
+                forms.Add(new FormStringTableEditor(this));
+            }
+            catch (Exception ex)
+            {
+                Log.Info("Failed to create FormStringTableEditor; String-table Editor will be unavailable: " + ex);
+            }
+
             panels.Add(new SubPanelContainer("Controls", new SubPanel[]
             {
                 new ScenePanel(this, hotkeyManager, ini),

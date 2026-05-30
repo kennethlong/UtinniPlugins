@@ -527,9 +527,11 @@ namespace TJT.UI.Forms
         {
             if (currentMatchIndex < 0 || currentMatchIndex >= currentMatches.Count) return;
             var m = currentMatches[currentMatchIndex];
-            if (m.row < gridSurface.Rows.Count && m.col < gridSurface.Columns.Count)
+            // CR-01: match coords are MODEL-indexed; translate to the current visual row to navigate.
+            int matchVisualRow = gridSurface.ToVisualRowIndex(m.row);
+            if (matchVisualRow >= 0 && m.col >= 0 && m.col < gridSurface.Columns.Count)
             {
-                gridSurface.CurrentCell = gridSurface.Rows[m.row].Cells[m.col];
+                gridSurface.CurrentCell = gridSurface.Rows[matchVisualRow].Cells[m.col];
             }
             gridSurface.SetSearchMatches(
                 currentMatches.Select(mm => new KeyValuePair<int, int>(mm.row, mm.col)), m.row, m.col);
@@ -721,9 +723,12 @@ namespace TJT.UI.Forms
             firstCommentRowIndex = 0;
             bool freeze = !editCommentRows;
 
-            if (firstCommentRowIndex < gridSurface.Rows.Count)
+            // CR-01: firstCommentRowIndex is a MODEL index; freeze the grid row at its current visual
+            // position. SetFrozenCommentRow keeps the MODEL index (CellFormatting translates it back).
+            int commentVisualIndex = gridSurface.ToVisualRowIndex(firstCommentRowIndex);
+            if (commentVisualIndex >= 0 && commentVisualIndex < gridSurface.Rows.Count)
             {
-                DataGridViewRow gridRow = gridSurface.Rows[firstCommentRowIndex];
+                DataGridViewRow gridRow = gridSurface.Rows[commentVisualIndex];
                 gridRow.Frozen = freeze;
                 gridRow.ReadOnly = freeze;
             }
@@ -754,6 +759,13 @@ namespace TJT.UI.Forms
             return gridSurface.CurrentCell != null ? gridSurface.CurrentCell.RowIndex : -1;
         }
 
+        // CR-01: the selected cell's RowIndex is a VISUAL index; structural row ops (remove/move) act on
+        // the MODEL, so translate through the row Tag — a view-only sort diverges visual from model.
+        private int SelectedModelRowIndex()
+        {
+            return gridSurface.ToModelRowIndex(SelectedRowIndex());
+        }
+
         private int SelectedColumnIndex()
         {
             return gridSurface.CurrentCell != null ? gridSurface.CurrentCell.ColumnIndex : -1;
@@ -761,7 +773,7 @@ namespace TJT.UI.Forms
 
         private void RemoveSelectedRow()
         {
-            int r = SelectedRowIndex();
+            int r = SelectedModelRowIndex();
             if (controller == null || dtDocument == null || r < 0 || r >= dtDocument.Mutable.Rows.Count) return;
             controller.Apply(DatatableEditCommands.RemoveRow(dtDocument.Mutable.Rows[r]));
             RebindGrid();
@@ -769,7 +781,7 @@ namespace TJT.UI.Forms
 
         private void MoveSelectedRow(int direction)
         {
-            int r = SelectedRowIndex();
+            int r = SelectedModelRowIndex();
             if (controller == null || dtDocument == null || r < 0 || r >= dtDocument.Mutable.Rows.Count) return;
             MutableDataTableRow row = dtDocument.Mutable.Rows[r];
             controller.Apply(direction < 0
@@ -854,7 +866,10 @@ namespace TJT.UI.Forms
                 backupCheckboxLabel: "Don't ask again this session"))
             {
                 dlg.ShowDialog(this);
-                if (dlg.Outcome == FormSaveConfirmDialog.ConfirmOutcome.Cancelled) return false;
+                // CR-02 hardening: proceed ONLY on an explicit accept. Today the dialog defaults Outcome
+                // to Cancelled (so X/Esc already blocks), but the != Accepted guard matches the sibling
+                // repack path and stays correct if a third outcome is ever added.
+                if (dlg.Outcome != FormSaveConfirmDialog.ConfirmOutcome.Accepted) return false;
                 if (dlg.BackupRequested) sessionSuppressColumnSafetyNet = true;
                 return true;
             }
@@ -910,9 +925,12 @@ namespace TJT.UI.Forms
                 var cells = dtDocument.Mutable.Rows[r].Cells;
                 for (int c = 0; c < cells.Count; c++)
                 {
-                    if (ReferenceEquals(cells[c], target) && r < gridSurface.Rows.Count && c < gridSurface.Columns.Count)
+                    if (ReferenceEquals(cells[c], target) && c < gridSurface.Columns.Count)
                     {
-                        gridSurface.CurrentCell = gridSurface.Rows[r].Cells[c];
+                        // CR-01: r is a MODEL index; select the row at its current visual position.
+                        int vis = gridSurface.ToVisualRowIndex(r);
+                        if (vis < 0) return;
+                        gridSurface.CurrentCell = gridSurface.Rows[vis].Cells[c];
                         gridSurface.Focus();
                         return;
                     }
@@ -1017,14 +1035,20 @@ namespace TJT.UI.Forms
         // Resolve the backing cell and write the edited grid value to the model. For DT_HashString
         // the typed SOURCE STRING is hashed (item 5); CheckBox writes its bool; ComboBox writes the
         // selected enum label resolved against EnumMap; numeric columns coerce via the column type.
-        private void CommitCell(int rowIndex, int columnIndex)
+        private void CommitCell(int visualRowIndex, int columnIndex)
         {
+            // CR-01: the grid edit reports a VISUAL row index; after a view-only sort that no longer
+            // equals the model index. Translate through the row Tag before touching the model, or the
+            // edit silently lands on (and corrupts) a different row's bytes.
+            int rowIndex = gridSurface.ToModelRowIndex(visualRowIndex);
+            if (rowIndex < 0 || rowIndex >= dtDocument.Mutable.Rows.Count) return;
+
             MutableDataTableRow row = dtDocument.Mutable.Rows[rowIndex];
             MutableDataTableCell cell = row.Cells[columnIndex];
             MutableDataTableColumn column = dtDocument.Mutable.Columns[columnIndex];
             DataTableColumnType ct = column.ColumnType;
 
-            object gridValue = gridSurface.Rows[rowIndex].Cells[columnIndex].Value;
+            object gridValue = gridSurface.Rows[visualRowIndex].Cells[columnIndex].Value;
             string raw = gridValue == null ? string.Empty : gridValue.ToString();
 
             // Plan 09-04: route the edit through controller.Apply(EditCellValue) so it joins the undo/
@@ -1047,7 +1071,7 @@ namespace TJT.UI.Forms
                     int stored = unchecked((int)hash);
                     newValue = DataTableCellValue.FromInt(stored);
                     // Reflect the stored int32 back into the grid display (item 5 default display).
-                    gridSurface.Rows[rowIndex].Cells[columnIndex].Value =
+                    gridSurface.Rows[visualRowIndex].Cells[columnIndex].Value =
                         stored.ToString(CultureInfo.InvariantCulture);
                     break;
                 }

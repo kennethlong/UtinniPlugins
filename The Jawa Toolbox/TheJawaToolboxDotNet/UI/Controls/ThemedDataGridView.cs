@@ -240,6 +240,13 @@ namespace TJT.UI.Controls
                     {
                         int rowIndex = Rows.Add();
                         DataGridViewRow gridRow = Rows[rowIndex];
+                        // CR-01: stamp the backing model row index onto each grid row. The view-only
+                        // sort (SortMode.Automatic on a non-databound grid) PHYSICALLY reorders the
+                        // DataGridViewRow collection, so the visual index diverges from the model
+                        // index after a header-click sort. Every model access translates the visual
+                        // index back through this Tag (see ToModelRowIndex) so an edit/remove/move can
+                        // never land on the wrong model row.
+                        gridRow.Tag = r;
                         MutableDataTableRow modelRow = doc.Rows[r];
                         for (int c = 0; c < doc.Columns.Count && c < gridRow.Cells.Count; c++)
                         {
@@ -252,6 +259,39 @@ namespace TJT.UI.Controls
             {
                 ResumeLayout();
             }
+        }
+
+        /// <summary>
+        /// Translates a VISUAL grid row index to its backing MODEL row index (CR-01). With the
+        /// non-virtual view-only sort, <c>SortMode.Automatic</c> physically reorders the rows, so the
+        /// visual index no longer equals the model index — each row carries its model index in
+        /// <see cref="DataGridViewRow.Tag"/> (set in <see cref="BindMutable"/>). VirtualMode is never
+        /// auto-sorted (DataGridView does not sort virtual rows without a manual handler), so the
+        /// identity mapping holds there. Returns the input unchanged if no tag is present (defensive).
+        /// </summary>
+        public int ToModelRowIndex(int visualRowIndex)
+        {
+            if (visualRowIndex < 0) return visualRowIndex;
+            if (IsVirtual) return visualRowIndex;
+            if (visualRowIndex < Rows.Count && Rows[visualRowIndex].Tag is int modelIndex) return modelIndex;
+            return visualRowIndex;
+        }
+
+        /// <summary>
+        /// Inverse of <see cref="ToModelRowIndex"/>: finds the current VISUAL grid row index showing the
+        /// given MODEL row (CR-01). Used by navigation paths (Find-jump, focus-cell, frozen-comment row)
+        /// that hold a model index and need to select/style the row at its post-sort visual position.
+        /// Returns -1 when the model row is not currently materialized.
+        /// </summary>
+        public int ToVisualRowIndex(int modelRowIndex)
+        {
+            if (modelRowIndex < 0) return modelRowIndex;
+            if (IsVirtual) return modelRowIndex;
+            for (int i = 0; i < Rows.Count; i++)
+            {
+                if (Rows[i].Tag is int t && t == modelRowIndex) return i;
+            }
+            return -1;
         }
 
         // VirtualMode read: serve the cell's display value from the backing model on demand (only
@@ -336,15 +376,21 @@ namespace TJT.UI.Controls
         private void OnCellFormatting(object sender, DataGridViewCellFormattingEventArgs e)
         {
             if (boundDocument == null) return;
-            if (e.RowIndex < 0 || e.RowIndex >= boundDocument.Rows.Count) return;
-            if (e.ColumnIndex < 0 || e.ColumnIndex >= boundDocument.Columns.Count) return;
+            if (e.RowIndex < 0 || e.ColumnIndex < 0) return;
+            if (e.ColumnIndex >= boundDocument.Columns.Count) return;
 
-            MutableDataTableRow row = boundDocument.Rows[e.RowIndex];
+            // CR-01: the overlays (dirty / needs-review / search / frozen-comment) are keyed by MODEL
+            // row index, but CellFormatting reports the VISUAL row index — translate through the row
+            // Tag so a sorted view styles the correct backing cell.
+            int modelRowIndex = ToModelRowIndex(e.RowIndex);
+            if (modelRowIndex < 0 || modelRowIndex >= boundDocument.Rows.Count) return;
+
+            MutableDataTableRow row = boundDocument.Rows[modelRowIndex];
             MutableDataTableCell cell = row.Cells[e.ColumnIndex];
 
             // Frozen DT_Comment header row (Plan 09-06): dimmed treatment, takes precedence over the
             // dirty/added accents (a frozen comment row is not user-edited).
-            if (frozenCommentRowIndex >= 0 && e.RowIndex == frozenCommentRowIndex)
+            if (frozenCommentRowIndex >= 0 && modelRowIndex == frozenCommentRowIndex)
             {
                 e.CellStyle.BackColor = Colors.PrimaryShadow();
                 e.CellStyle.ForeColor = Colors.FontDisabled();
@@ -356,7 +402,7 @@ namespace TJT.UI.Controls
             // can see what Find landed on.
             if (searchMatchKeys != null && searchMatchKeys.Count > 0)
             {
-                long key = CellKey(e.RowIndex, e.ColumnIndex);
+                long key = CellKey(modelRowIndex, e.ColumnIndex);
                 if (key == activeMatchKey)
                 {
                     e.CellStyle.BackColor = Colors.Secondary();

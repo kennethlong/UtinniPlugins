@@ -425,8 +425,18 @@ namespace TJT.UI.Forms
 
         // ── Grid bind (own rows from EffectiveField) ─────────────────────────
 
+        // Guards the programmatic grid population below from re-entering the commit path.
+        // Setting a cell's .Value (checkbox/text/numeric) raises CellValueChanged / CellEndEdit,
+        // which route to CommitCell. Without this guard, binding an inherited bool fires
+        // CommitCell -> AddOverride -> EditApplied -> BindEffectiveView -> ... recursing until
+        // AddOverride throws "a local param named '...' already exists". Saved/restored (not a
+        // hard true/false) so a nested bind (e.g. CommitCell's reject-path re-bind) restores it.
+        private bool suppressCommit;
+
         private void BindEffectiveView()
         {
+            bool prevSuppress = suppressCommit;
+            suppressCommit = true;
             gridSurface.SuspendLayout();
             try
             {
@@ -484,6 +494,7 @@ namespace TJT.UI.Forms
             finally
             {
                 gridSurface.ResumeLayout();
+                suppressCommit = prevSuppress;
             }
         }
 
@@ -792,6 +803,9 @@ namespace TJT.UI.Forms
         // mutation through the controller — promoting an inherited row to a local override on commit.
         private void CommitCell(int rowIndex)
         {
+            // Programmatic bind sets cell values; those are not user edits. Without this the
+            // bind recurses through AddOverride/EditApplied until AddOverride throws.
+            if (suppressCommit) return;
             if (controller == null || rowIndex < 0 || rowIndex >= gridSurface.Rows.Count) return;
             EffectiveField field = FieldAt(rowIndex);
             if (field == null || field.EffectiveValue == null || !IsInlineEditable(field)) return;

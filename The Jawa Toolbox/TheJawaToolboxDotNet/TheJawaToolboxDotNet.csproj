@@ -96,6 +96,12 @@
     <Compile Include="UI\Forms\FormStringTableEditor.Designer.cs">
       <DependentUpon>FormStringTableEditor.cs</DependentUpon>
     </Compile>
+    <Compile Include="UI\Forms\FormObjectTemplateEditor.cs">
+      <SubType>Form</SubType>
+    </Compile>
+    <Compile Include="UI\Forms\FormObjectTemplateEditor.Designer.cs">
+      <DependentUpon>FormObjectTemplateEditor.cs</DependentUpon>
+    </Compile>
     <Compile Include="UI\Forms\FormStfCsvImportPreviewDialog.cs">
       <SubType>Form</SubType>
     </Compile>

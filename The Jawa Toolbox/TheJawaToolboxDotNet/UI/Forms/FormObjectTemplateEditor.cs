@@ -33,9 +33,12 @@
 using System;
 using System.Collections.Generic;
 using System.Drawing;
+using System.Globalization;
 using System.IO;
 using System.Threading.Tasks;
 using System.Windows.Forms;
+using TJT.Saving;
+using TJT.UI.Controls;
 using UtinniCore.Utinni;
 using UtinniCoreDotNet.Editing;
 using UtinniCoreDotNet.Formats.Iff;
@@ -44,6 +47,7 @@ using UtinniCoreDotNet.Formats.Tre;
 using UtinniCoreDotNet.PluginFramework;
 using UtinniCoreDotNet.Saving;
 using UtinniCoreDotNet.UI;
+using UtinniCoreDotNet.UI.Controls;
 using UtinniCoreDotNet.UI.Forms;
 using UtinniCoreDotNet.UI.Theme;
 
@@ -95,6 +99,22 @@ namespace TJT.UI.Forms
         // View-only inherited-row visibility (default ON, persisted). When OFF the grid hides inherited
         // rows (view-only; the model + resolved chain are unchanged).
         private bool showInheritedRows = true;
+
+        // Save▾ drop-down state (modes 1/2/4 via ObjectTemplateSaveTargets; mode 3 disabled CF-03).
+        private UtinniContextMenuStrip saveMenu;
+        private ToolStripMenuItem miSaveInPlace;
+        private ToolStripMenuItem miSaveLooseOverride;
+        private ToolStripMenuItem miSaveAs;
+        private ToolStripMenuItem miPatchLive;
+        private ToolStripMenuItem miRepackTre;
+        private bool saveInFlight;
+        private string lastSavedPath;
+
+        // Grid context menu (promote / revert / edit raw bytes).
+        private UtinniContextMenuStrip gridContextMenu;
+        private ToolStripMenuItem miPromote;
+        private ToolStripMenuItem miRevert;
+        private ToolStripMenuItem miEditRawBytes;
 
         /// <summary>
         /// Provenance descriptor for the currently loaded document. The open paths set this to gate the
@@ -158,27 +178,42 @@ namespace TJT.UI.Forms
             toolTip.SetToolTip(btnFindNext, "Find next (F3)");
             toolTip.SetToolTip(btnFindClose, "Close (Esc)");
 
-            // The only ENABLED, functional toolbar button in Plan 11-03 is Open…. The rest are wired in
-            // Plan 11-04 (Save / Promote / Revert / Reload), or become enabled on LoadDocument
-            // (Undo / Redo / Find / Replace / Show inherited).
+            // Open… is enabled from the start; the rest become enabled on LoadDocument
+            // (Undo / Redo / Find / Replace / Show inherited / Save / Promote / Revert / Reload).
             btnOpen.Click += OnOpenClicked;
             btnUndo.Click += OnUndoClicked;
             btnRedo.Click += OnRedoClicked;
             tglShowInherited.CheckedChanged += OnShowInheritedToggled;
 
-            // Plan 11-04 stub handlers (status-only until the mutation/save bodies land).
+            // Plan 11-04: the mutation + save + reload bodies are wired here (no longer status stubs).
             btnSave.Click += OnSaveButtonClick;
             btnPromote.Click += OnPromoteClicked;
             btnRevert.Click += OnRevertClicked;
             btnReload.Click += OnReloadClicked;
 
+            // Save▾ drop-down (modes 1/2/4 via the ObjectTemplateSaveTargets shim; mode 3 disabled CF-03).
+            BuildSaveMenu();
+
             // Configure the four fixed effective-view columns + the cell-state overlay formatter.
             ConfigureGridColumns();
             gridSurface.CellFormatting += OnGridCellFormatting;
 
+            // Per-type value editing (D-02) + the D-04 commit seam (promote-on-inherited-edit).
+            gridSurface.CellEndEdit += OnCellEndEdit;
+            gridSurface.CellValueChanged += OnCellValueChanged;
+            gridSurface.EditingControlShowing += OnEditingControlShowing;
+            gridSurface.CellBeginEdit += OnCellBeginEdit;
+            gridSurface.CellMouseDown += OnCellMouseDown;
+            gridSurface.CellDoubleClick += OnCellDoubleClick;
+            gridSurface.SelectionChanged += OnGridSelectionChanged;
+
+            // Lazily-built grid context menu (promote / revert / edit raw bytes).
+            BuildGridContextMenu();
+
             SetTitle(null);
             UpdateDirtyVisuals();
             UpdateCounters();
+            RefreshMutationButtonsState();
         }
 
         // ── IEditorForm ──────────────────────────────────────────────────────
@@ -231,7 +266,10 @@ namespace TJT.UI.Forms
             gridSurface.AllowUserToResizeColumns = true;
             gridSurface.MultiSelect = false;
             gridSurface.SelectionMode = DataGridViewSelectionMode.FullRowSelect;
-            gridSurface.ReadOnly = true; // value editing is wired Plan 11-04.
+            // The grid is NOT globally read-only (Plan 11-04 wires value editing). Editability is
+            // governed per-cell: only the Effective value cell of a typed-scalar local-or-inherited row
+            // is editable; complex/raw and unresolved cells stay ReadOnly (set in BindEffectiveView).
+            gridSurface.ReadOnly = false;
 
             var colField = new DataGridViewTextBoxColumn
             {
@@ -245,7 +283,7 @@ namespace TJT.UI.Forms
             {
                 Name = "EffectiveValue",
                 HeaderText = "Effective value",
-                ReadOnly = true,
+                ReadOnly = false, // per-cell ReadOnly is set in BindEffectiveView by decoded type.
                 FillWeight = 50,
                 AutoSizeMode = DataGridViewAutoSizeColumnMode.Fill,
                 SortMode = DataGridViewColumnSortMode.Automatic
@@ -315,7 +353,9 @@ namespace TJT.UI.Forms
                     RenderBreadcrumb();
 
                     pnlBreadcrumb.Visible = true;
-                    lblReloadBadge.Visible = true;
+                    // Reload badge visibility is governed by RefreshReloadButtonState (hidden when no
+                    // live client per CF-05); set the LOCKED text here regardless.
+                    lblReloadBadge.Text = "Reloads on next scene change (relog to guarantee).";
 
                     EnableDocumentControls();
                     UpdateUndoRedoState();
@@ -400,9 +440,39 @@ namespace TJT.UI.Forms
                     gridRow.Tag = field; // origin overlays + selection read the field off the Tag.
 
                     gridRow.Cells[ColField].Value = field.FieldName;
-                    gridRow.Cells[ColValue].Value = FormatEffectiveValue(field);
                     gridRow.Cells[ColOrigin].Value = FormatOrigin(field);
                     gridRow.Cells[ColType].Value = FormatType(field);
+
+                    // Per-type Effective-value cell. bool swaps to a checkbox cell; int/float/string stay
+                    // text cells edited via the EditingControlShowing widget swap; complex/raw and
+                    // unresolved cells are read-only (edited via the hex sub-editor or not at all).
+                    bool isBool = field.EffectiveValue != null
+                        && field.EffectiveValue.Kind == ObjectTemplateParamKind.Bool;
+                    if (isBool)
+                    {
+                        var checkCell = new DataGridViewCheckBoxCell { ThreeState = false };
+                        gridRow.Cells[ColValue] = checkCell;
+                        checkCell.Value = field.EffectiveValue.BoolValue;
+                        checkCell.ReadOnly = false;
+                    }
+                    else
+                    {
+                        bool isNumeric = field.EffectiveValue != null
+                            && (field.EffectiveValue.Kind == ObjectTemplateParamKind.Int
+                                || field.EffectiveValue.Kind == ObjectTemplateParamKind.Float);
+                        if (isNumeric)
+                        {
+                            // Swap in the numeric cell so EditingControlShowing tunes the UtinniNumericUpDown.
+                            gridRow.Cells[ColValue] = new ObjectTemplateNumericCell();
+                        }
+                        else if (!(gridRow.Cells[ColValue] is DataGridViewTextBoxCell))
+                        {
+                            // Restore a plain text cell if a previous bind left a checkbox/numeric cell here.
+                            gridRow.Cells[ColValue] = new DataGridViewTextBoxCell();
+                        }
+                        gridRow.Cells[ColValue].Value = FormatEffectiveValue(field);
+                        gridRow.Cells[ColValue].ReadOnly = !IsInlineEditable(field);
+                    }
 
                     // Show-inherited toggle (view-only): hide inherited rows when OFF.
                     if (!showInheritedRows && field.Origin == EffectiveFieldOriginKind.Inherited)
@@ -617,6 +687,8 @@ namespace TJT.UI.Forms
             UpdateUndoRedoState();
             UpdateDirtyVisuals();
             UpdateCounters();
+            RefreshSaveMenuEnabledState();
+            RefreshMutationButtonsState();
         }
 
         private void EnableDocumentControls()
@@ -624,7 +696,9 @@ namespace TJT.UI.Forms
             btnFind.Enabled = true;
             btnReplace.Enabled = true;
             tglShowInherited.Enabled = true;
-            // Save / Promote / Revert / Reload bodies land in Plan 11-04; they stay disabled this plan.
+            RefreshSaveMenuEnabledState();
+            RefreshReloadButtonState();
+            RefreshMutationButtonsState();
         }
 
         private void UpdateUndoRedoState()
@@ -651,33 +725,777 @@ namespace TJT.UI.Forms
             ApplyShowInheritedFilter();
         }
 
-        // ── Plan 11-04 stub handlers (status-only until the mutation/save bodies land) ──
+        // ── Per-type value editing (D-02) + the D-04 commit seam ─────────────────
+        //
+        // The Effective-value cell is the one editable surface. bool → checkbox cell; int/float →
+        // UtinniNumericUpDown via EditingControlShowing; string → free text. Complex/raw/unresolved
+        // cells are ReadOnly (edited via the hex sub-editor or not at all). On a committed scalar edit,
+        // the commit BRANCHES on origin: a LocalOverride row routes to controller.Apply(EditValue(...));
+        // an Inherited row routes to controller.Apply(AddOverride(...)) — editing an inherited value
+        // PROMOTES it to a local override (D-04). All mutations go through the controller → undoable.
 
-        private void OnSaveButtonClick(object sender, EventArgs e)
+        private void OnEditingControlShowing(object sender, DataGridViewEditingControlShowingEventArgs e)
         {
-            lblStatus.Text = "Save targets are wired in the next plan.";
-            lblStatus.ForeColor = Colors.Font();
+            EffectiveField field = SelectedField();
+            if (field == null || field.EffectiveValue == null) return;
+
+            var numeric = e.Control as ObjectTemplateNumericUpDownEditingControl;
+            if (numeric == null) return;
+
+            if (field.EffectiveValue.Kind == ObjectTemplateParamKind.Int)
+            {
+                numeric.DecimalPlaces = 0;
+                numeric.Increment = 1m;
+                numeric.Minimum = int.MinValue;
+                numeric.Maximum = int.MaxValue;
+            }
+            else if (field.EffectiveValue.Kind == ObjectTemplateParamKind.Float)
+            {
+                numeric.DecimalPlaces = 6;
+                numeric.Increment = 0.1m;
+                numeric.Minimum = decimal.MinValue;
+                numeric.Maximum = decimal.MaxValue;
+            }
         }
+
+        private void OnCellBeginEdit(object sender, DataGridViewCellCancelEventArgs e)
+        {
+            if (e.RowIndex < 0 || e.ColumnIndex != ColValue) { e.Cancel = e.ColumnIndex != ColValue; return; }
+            EffectiveField field = FieldAt(e.RowIndex);
+            if (field == null || !IsInlineEditable(field))
+            {
+                // Complex/raw/unresolved cells are not inline-editable (prevents corrupt typed edits).
+                e.Cancel = true;
+            }
+        }
+
+        // Commit checkbox toggles immediately (no Enter needed); text/numeric commit on CellEndEdit.
+        private void OnCellValueChanged(object sender, DataGridViewCellEventArgs e)
+        {
+            if (e.RowIndex < 0 || e.ColumnIndex != ColValue) return;
+            EffectiveField field = FieldAt(e.RowIndex);
+            if (field == null || field.EffectiveValue == null) return;
+            if (field.EffectiveValue.Kind != ObjectTemplateParamKind.Bool) return; // checkbox only.
+            CommitCell(e.RowIndex);
+        }
+
+        private void OnCellEndEdit(object sender, DataGridViewCellEventArgs e)
+        {
+            if (e.RowIndex < 0 || e.ColumnIndex != ColValue) return;
+            EffectiveField field = FieldAt(e.RowIndex);
+            if (field == null || field.EffectiveValue == null) return;
+            if (field.EffectiveValue.Kind == ObjectTemplateParamKind.Bool) return; // handled on change.
+            CommitCell(e.RowIndex);
+        }
+
+        // Reads the edited grid value, coerces it to a typed ObjectTemplateParamValue, and routes the
+        // mutation through the controller — promoting an inherited row to a local override on commit.
+        private void CommitCell(int rowIndex)
+        {
+            if (controller == null || rowIndex < 0 || rowIndex >= gridSurface.Rows.Count) return;
+            EffectiveField field = FieldAt(rowIndex);
+            if (field == null || field.EffectiveValue == null || !IsInlineEditable(field)) return;
+
+            object cellValue = gridSurface.Rows[rowIndex].Cells[ColValue].Value;
+            ObjectTemplateParamValue newValue;
+            if (!TryCoerceValue(field.EffectiveValue, cellValue, out newValue))
+            {
+                lblStatus.Text = "Value \"" + (cellValue ?? "").ToString() + "\" is not valid for \"" + field.FieldName + "\".";
+                lblStatus.ForeColor = Color.Red;
+                // Re-bind to discard the rejected edit (restores the prior effective value display).
+                BindEffectiveView();
+                return;
+            }
+
+            // No-op guard: an unchanged value should not dirty the document.
+            if (field.Origin == EffectiveFieldOriginKind.LocalOverride && ValuesEqual(field.EffectiveValue, newValue))
+            {
+                return;
+            }
+
+            if (field.Origin == EffectiveFieldOriginKind.LocalOverride)
+            {
+                controller.Apply(ObjectTemplateEditCommands.EditValue(field.FieldName, newValue));
+            }
+            else if (field.Origin == EffectiveFieldOriginKind.Inherited)
+            {
+                // Editing an inherited value PROMOTES it to a local override (D-04).
+                controller.Apply(ObjectTemplateEditCommands.AddOverride(field.FieldName, newValue));
+                lblStatus.Text = "Promoted \"" + field.FieldName + "\" to a local override.";
+                lblStatus.ForeColor = Colors.Font();
+            }
+            // OnEditApplied re-resolves + re-binds.
+        }
+
+        // Coerces a grid cell's edited value (string/bool) into a typed ObjectTemplateParamValue that
+        // matches the field's current Kind. Preserves the verbatim numeric delta byte. Returns false on
+        // an invalid numeric input.
+        private static bool TryCoerceValue(ObjectTemplateParamValue current, object cellValue, out ObjectTemplateParamValue result)
+        {
+            result = null;
+            string raw = cellValue == null ? string.Empty : cellValue.ToString();
+            switch (current.Kind)
+            {
+                case ObjectTemplateParamKind.Bool:
+                {
+                    bool b = cellValue is bool bv ? bv
+                        : string.Equals(raw, "true", StringComparison.OrdinalIgnoreCase) || raw == "1";
+                    result = ObjectTemplateParamValue.FromBool(b);
+                    return true;
+                }
+                case ObjectTemplateParamKind.Int:
+                {
+                    int parsed;
+                    if (!int.TryParse(raw, NumberStyles.Integer, CultureInfo.InvariantCulture, out parsed))
+                    {
+                        // The numeric editor may surface a decimal-formatted string; coerce via decimal.
+                        decimal d;
+                        if (!decimal.TryParse(raw, NumberStyles.Any, CultureInfo.InvariantCulture, out d)) return false;
+                        parsed = (int)Math.Truncate(d);
+                    }
+                    result = ObjectTemplateParamValue.FromInt(parsed, current.DeltaType ?? (byte)' ');
+                    return true;
+                }
+                case ObjectTemplateParamKind.Float:
+                {
+                    float parsed;
+                    if (!float.TryParse(raw, NumberStyles.Float, CultureInfo.InvariantCulture, out parsed)) return false;
+                    result = ObjectTemplateParamValue.FromFloat(parsed, current.DeltaType ?? (byte)' ');
+                    return true;
+                }
+                case ObjectTemplateParamKind.String:
+                {
+                    result = ObjectTemplateParamValue.FromString(raw);
+                    return true;
+                }
+                default:
+                    return false; // None / RawBytesHexFallback are not inline-editable.
+            }
+        }
+
+        private static bool ValuesEqual(ObjectTemplateParamValue a, ObjectTemplateParamValue b)
+        {
+            if (a == null || b == null || a.Kind != b.Kind) return false;
+            switch (a.Kind)
+            {
+                case ObjectTemplateParamKind.Bool: return a.BoolValue == b.BoolValue;
+                case ObjectTemplateParamKind.Int: return a.IntValue == b.IntValue && a.DeltaType == b.DeltaType;
+                case ObjectTemplateParamKind.Float: return a.FloatValue.Equals(b.FloatValue) && a.DeltaType == b.DeltaType;
+                case ObjectTemplateParamKind.String: return string.Equals(a.StringValue, b.StringValue, StringComparison.Ordinal);
+                default: return false;
+            }
+        }
+
+        // Only SINGLE scalar typed values are inline-editable; complex/raw fallbacks and unresolved
+        // rows are NOT (they are edited via the hex sub-editor or not at all — D-02 guarantee).
+        private static bool IsInlineEditable(EffectiveField field)
+        {
+            if (field == null || field.EffectiveValue == null) return false;
+            if (field.Origin == EffectiveFieldOriginKind.UnresolvedBase) return false;
+            switch (field.EffectiveValue.Kind)
+            {
+                case ObjectTemplateParamKind.Bool:
+                case ObjectTemplateParamKind.Int:
+                case ObjectTemplateParamKind.Float:
+                case ObjectTemplateParamKind.String:
+                    return true;
+                default:
+                    return false; // None / RawBytesHexFallback → hex sub-editor.
+            }
+        }
+
+        // ── Promote / Revert (D-04 — undoable via the controller) ────────────────
 
         private void OnPromoteClicked(object sender, EventArgs e)
         {
-            lblStatus.Text = "Promote to override is wired in the next plan.";
+            PromoteSelectedField();
+        }
+
+        private void PromoteSelectedField()
+        {
+            if (controller == null) return;
+            EffectiveField field = SelectedField();
+            if (field == null) return;
+            if (field.Origin != EffectiveFieldOriginKind.Inherited || field.EffectiveValue == null)
+            {
+                lblStatus.Text = "Select an inherited field to promote.";
+                lblStatus.ForeColor = Colors.Font();
+                return;
+            }
+            // Copy the inherited value verbatim into a new local chunk.
+            controller.Apply(ObjectTemplateEditCommands.AddOverride(field.FieldName, field.EffectiveValue));
+            lblStatus.Text = "Promoted \"" + field.FieldName + "\" to a local override.";
             lblStatus.ForeColor = Colors.Font();
         }
 
         private void OnRevertClicked(object sender, EventArgs e)
         {
-            lblStatus.Text = "Revert to inherited is wired in the next plan.";
+            RevertSelectedField();
+        }
+
+        private void RevertSelectedField()
+        {
+            if (controller == null) return;
+            EffectiveField field = SelectedField();
+            if (field == null) return;
+            if (field.Origin != EffectiveFieldOriginKind.LocalOverride)
+            {
+                lblStatus.Text = "Select a local override to revert.";
+                lblStatus.ForeColor = Colors.Font();
+                return;
+            }
+
+            // Determine the inherited value this field would fall back to (for the confirm + feedback).
+            string ancestor;
+            bool hasInherited = TryResolveInheritedValue(field.FieldName, out ancestor);
+            if (!hasInherited)
+            {
+                // A local-only field has no inherited value to revert to — the button is disabled with
+                // this tooltip, but guard defensively.
+                lblStatus.Text = "No inherited value to revert to — this field exists only locally.";
+                lblStatus.ForeColor = Colors.Font();
+                return;
+            }
+
+            // Lightweight confirm (local + undoable, so a single inline confirm is sufficient).
+            using (var dlg = new FormSaveConfirmDialog(
+                heading: "Revert \"" + field.FieldName + "\"?",
+                body: "This deletes the local override and restores the inherited value from "
+                    + ancestor + ". You can undo this.",
+                acceptVerb: "Revert",
+                cancelVerb: "Cancel",
+                showBackupCheckbox: false,
+                backupCheckboxLabel: null))
+            {
+                dlg.ShowDialog(this);
+                if (dlg.Outcome != FormSaveConfirmDialog.ConfirmOutcome.Accepted) return;
+            }
+
+            controller.Apply(ObjectTemplateEditCommands.RemoveOverride(field.FieldName));
+            lblStatus.Text = "Reverted \"" + field.FieldName + "\" to the inherited value from " + ancestor + ".";
             lblStatus.ForeColor = Colors.Font();
         }
 
+        // Resolves whether a field has an inherited value in some resolvable ancestor (and names it),
+        // by re-resolving against the resolver with NO local chunk for that field. We approximate by
+        // scanning the effective view computed WITHOUT the local override: cheaper here, we instead
+        // walk the resolved chain via a throwaway resolve and look for the field as Inherited.
+        private bool TryResolveInheritedValue(string fieldName, out string ancestorName)
+        {
+            ancestorName = null;
+            if (otDocument == null) return false;
+            // RemoveOverride mutates in place + raises EditApplied; to PREVIEW the inherited fallback
+            // without mutating, resolve the chain and check whether any RESOLVED ancestor (a base) other
+            // than the open template supplies this field. We reuse the base-locator walk: build a probe
+            // template view by temporarily removing the local param, resolving, then re-adding it.
+            //
+            // Simpler + side-effect-free: re-run the resolver, then for the target field consult the
+            // ancestors recorded in the breadcrumb. If any base is resolved AND the field is not
+            // local-only, the revert lands on that base's value. We detect "local-only" by checking the
+            // resolved view AFTER a hypothetical removal — done by removing, resolving, and restoring.
+            MutableObjectTemplateParam local = null;
+            foreach (MutableObjectTemplateParam p in otDocument.LocalParams)
+            {
+                if (string.Equals(p.FieldName, fieldName, StringComparison.Ordinal)) { local = p; break; }
+            }
+            if (local == null) return false;
+
+            ObjectTemplateParamValue captured = local.Value;
+            try
+            {
+                otDocument.RemoveOverride(fieldName);
+                EffectiveTemplateView probe = ResolveEffectiveView(otDocument);
+                foreach (EffectiveField f in probe.Fields)
+                {
+                    if (string.Equals(f.FieldName, fieldName, StringComparison.Ordinal)
+                        && f.Origin == EffectiveFieldOriginKind.Inherited)
+                    {
+                        ancestorName = f.OriginAncestorName;
+                        return true;
+                    }
+                }
+                return false;
+            }
+            finally
+            {
+                // Restore the local override so the document is unchanged by this preview.
+                otDocument.AddOverride(fieldName, captured);
+            }
+        }
+
+        // ── Reload candor (CF-05 — the editor STATES the reload; it never triggers one) ──
+
         private void OnReloadClicked(object sender, EventArgs e)
         {
-            // CF-05 LOCKED candor copy: the editor STATES the reload, it never triggers one.
+            // CON-M-05 + CF-05: Utinni does NOT call ObjectTemplateList::reload. We surface the LOCKED
+            // candor copy and route the saved asset through the routing-table audit trail only (which
+            // classifies it as PendingNextSceneChange — no fresh reload hook is invoked).
+            if (!string.IsNullOrEmpty(lastSavedPath))
+            {
+                bool clientUp = false;
+                try { clientUp = Game.IsRunning; }
+                catch { clientUp = false; }
+                if (clientUp)
+                {
+                    DispatchReload(lastSavedPath);
+                }
+            }
+
             lblStatus.Text = "Templates re-resolve on the next scene change for objects re-instantiated then. "
                 + "Objects already in the world — and shared base templates — keep the cached version until a relog. "
                 + "Trigger a scene change via TJT's chat-command load, or relog to guarantee.";
             lblStatus.ForeColor = Colors.Font();
+
+            // Optional 1s accent pulse on the reload badge to acknowledge the click.
+            lblReloadBadge.ForeColor = Colors.Secondary();
+            var pulse = new Timer { Interval = 1000 };
+            pulse.Tick += (s, ev) =>
+            {
+                lblReloadBadge.ForeColor = Colors.Font();
+                pulse.Stop();
+                pulse.Dispose();
+            };
+            pulse.Start();
+        }
+
+        // ── Selection helpers + mutation-button enabled-state ────────────────────
+
+        private EffectiveField FieldAt(int rowIndex)
+        {
+            if (rowIndex < 0 || rowIndex >= gridSurface.Rows.Count) return null;
+            return gridSurface.Rows[rowIndex].Tag as EffectiveField;
+        }
+
+        private EffectiveField SelectedField()
+        {
+            if (gridSurface.CurrentRow != null)
+            {
+                EffectiveField f = gridSurface.CurrentRow.Tag as EffectiveField;
+                if (f != null) return f;
+            }
+            if (gridSurface.SelectedRows.Count > 0)
+            {
+                return gridSurface.SelectedRows[0].Tag as EffectiveField;
+            }
+            return null;
+        }
+
+        private void OnGridSelectionChanged(object sender, EventArgs e)
+        {
+            RefreshMutationButtonsState();
+        }
+
+        // Promote enables on an inherited (resolved) row; Revert enables on a local override that has a
+        // resolvable inherited value (else DISABLED with the locked tooltip).
+        private void RefreshMutationButtonsState()
+        {
+            EffectiveField field = SelectedField();
+            bool hasDoc = otDocument != null;
+
+            bool canPromote = hasDoc && field != null
+                && field.Origin == EffectiveFieldOriginKind.Inherited && field.EffectiveValue != null;
+            btnPromote.Enabled = canPromote;
+            if (miPromote != null) miPromote.Enabled = canPromote;
+
+            bool isLocal = hasDoc && field != null && field.Origin == EffectiveFieldOriginKind.LocalOverride;
+            bool canRevert = false;
+            if (isLocal)
+            {
+                string ancestor;
+                canRevert = TryResolveInheritedValue(field.FieldName, out ancestor);
+            }
+            btnRevert.Enabled = canRevert;
+            if (miRevert != null)
+            {
+                miRevert.Enabled = canRevert;
+                miRevert.ToolTipText = (isLocal && !canRevert)
+                    ? "No inherited value to revert to — this field exists only locally."
+                    : "";
+            }
+            toolTip.SetToolTip(btnRevert, (isLocal && !canRevert)
+                ? "No inherited value to revert to — this field exists only locally."
+                : "Revert the selected local override back to inherited.");
+
+            bool isComplex = hasDoc && field != null && field.EffectiveValue != null
+                && field.EffectiveValue.Kind == ObjectTemplateParamKind.RawBytesHexFallback
+                && field.Origin != EffectiveFieldOriginKind.UnresolvedBase;
+            if (miEditRawBytes != null) miEditRawBytes.Enabled = isComplex;
+        }
+
+        // ── Grid context menu (promote / revert / edit raw bytes) ────────────────
+
+        private void BuildGridContextMenu()
+        {
+            gridContextMenu = new UtinniContextMenuStrip();
+            miPromote = new ToolStripMenuItem("Promote to local override");
+            miPromote.Click += (s, e) => PromoteSelectedField();
+            miRevert = new ToolStripMenuItem("Revert to inherited value");
+            miRevert.Click += (s, e) => RevertSelectedField();
+            miEditRawBytes = new ToolStripMenuItem("Edit raw bytes…");
+            miEditRawBytes.Click += (s, e) => EditSelectedRawBytes();
+            gridContextMenu.Items.AddRange(new ToolStripItem[]
+            {
+                miPromote, miRevert, new ToolStripSeparator(), miEditRawBytes,
+            });
+        }
+
+        private void OnCellMouseDown(object sender, DataGridViewCellMouseEventArgs e)
+        {
+            if (e.Button != MouseButtons.Right || e.RowIndex < 0) return;
+            // Right-click selects the row, then shows the context menu anchored at the cursor.
+            gridSurface.ClearSelection();
+            gridSurface.Rows[e.RowIndex].Selected = true;
+            gridSurface.CurrentCell = gridSurface.Rows[e.RowIndex].Cells[ColField];
+            RefreshMutationButtonsState();
+            gridContextMenu.Show(Cursor.Position);
+        }
+
+        // Double-clicking a complex/raw value cell opens the hex sub-editor.
+        private void OnCellDoubleClick(object sender, DataGridViewCellEventArgs e)
+        {
+            if (e.RowIndex < 0 || e.ColumnIndex != ColValue) return;
+            EffectiveField field = FieldAt(e.RowIndex);
+            if (field == null || field.EffectiveValue == null) return;
+            if (field.EffectiveValue.Kind == ObjectTemplateParamKind.RawBytesHexFallback
+                && field.Origin != EffectiveFieldOriginKind.UnresolvedBase)
+            {
+                EditSelectedRawBytes();
+            }
+        }
+
+        // Opens the FormParamHexEditor modal for the selected complex param and, on OK, replaces the
+        // param's raw leaf bytes via the controller (dirty + undoable). Inherited complex params are
+        // promoted to a local override carrying the edited bytes.
+        private void EditSelectedRawBytes()
+        {
+            if (controller == null) return;
+            EffectiveField field = SelectedField();
+            if (field == null || field.EffectiveValue == null) return;
+            if (field.EffectiveValue.Kind != ObjectTemplateParamKind.RawBytesHexFallback
+                || field.Origin == EffectiveFieldOriginKind.UnresolvedBase)
+            {
+                return;
+            }
+
+            byte[] currentBytes = field.EffectiveValue.GetRawBytesCopy();
+            ObjectTemplateDataTypeTag tag = field.EffectiveValue.DataTypeTag;
+            using (var dlg = new FormParamHexEditor(field.FieldName, currentBytes))
+            {
+                if (dlg.ShowDialog(this) != DialogResult.OK || dlg.ResultBytes == null) return;
+                ObjectTemplateParamValue newValue = ObjectTemplateParamValue.FromRawBytes(dlg.ResultBytes, tag);
+
+                if (field.Origin == EffectiveFieldOriginKind.LocalOverride)
+                {
+                    controller.Apply(ObjectTemplateEditCommands.EditValue(field.FieldName, newValue));
+                }
+                else
+                {
+                    // Inherited complex param → promote to a local override with the edited bytes.
+                    controller.Apply(ObjectTemplateEditCommands.AddOverride(field.FieldName, newValue));
+                    lblStatus.Text = "Promoted \"" + field.FieldName + "\" to a local override.";
+                    lblStatus.ForeColor = Colors.Font();
+                }
+            }
+        }
+
+        // ── Save▾ drop-down (modes 1/2/4 via the ObjectTemplateSaveTargets shim) ──
+
+        private void BuildSaveMenu()
+        {
+            saveMenu = new UtinniContextMenuStrip();
+            miSaveInPlace = new ToolStripMenuItem("Save (in place)");
+            miSaveInPlace.Click += OnSaveInPlaceClick;
+            miSaveLooseOverride = new ToolStripMenuItem("Save as loose override");
+            miSaveLooseOverride.Click += OnSaveLooseOverrideClick;
+            miSaveAs = new ToolStripMenuItem("Save As…");
+            miSaveAs.Click += OnSaveAsClick;
+            miPatchLive = new ToolStripMenuItem("Patch live client (in memory)");
+            miPatchLive.Enabled = false; // CF-03 — Mode 3 disabled.
+            miPatchLive.ToolTipText = "Live patch requires opening from client memory — not wired in this phase.";
+            miPatchLive.Click += OnPatchLiveClientClick;
+            miRepackTre = new ToolStripMenuItem("Repack into source .tre…");
+            miRepackTre.Enabled = false;
+            miRepackTre.ToolTipText = "Open from a packed .tre to repack the source archive.";
+            miRepackTre.Click += OnRepackTreClick;
+            saveMenu.Items.AddRange(new ToolStripItem[]
+            {
+                miSaveInPlace, miSaveLooseOverride, miSaveAs,
+                new ToolStripSeparator(),
+                miPatchLive, miRepackTre,
+            });
+        }
+
+        // Provenance-gated enabled-state (no Phase-9 cascade term — OT has no column cascade).
+        private void RefreshSaveMenuEnabledState()
+        {
+            bool hasDoc = otDocument != null;
+            bool isLooseFile = Source is OpenSource.LooseFile;
+            bool isTreArchive = Source is OpenSource.TreArchive;
+            bool isUnknown = Source is OpenSource.Unknown;
+
+            if (miSaveInPlace != null)
+            {
+                miSaveInPlace.Enabled = hasDoc && isLooseFile && !saveInFlight;
+                miSaveInPlace.ToolTipText = isLooseFile
+                    ? ""
+                    : "Cannot save in place — file came from .tre or unknown source. Use Save as loose override or Save As.";
+            }
+            if (miSaveLooseOverride != null)
+            {
+                miSaveLooseOverride.Enabled = hasDoc && (isLooseFile || isTreArchive) && !saveInFlight;
+                miSaveLooseOverride.ToolTipText = (isLooseFile || isTreArchive)
+                    ? ""
+                    : "Cannot resolve archive record — use Save As to write to a chosen file.";
+            }
+            if (miSaveAs != null)
+            {
+                miSaveAs.Enabled = hasDoc && !saveInFlight; // escape hatch — always available on a doc.
+                miSaveAs.ToolTipText = "Save the current edits to a path you choose.";
+            }
+            if (miPatchLive != null)
+            {
+                miPatchLive.Enabled = false; // CF-03 — disabled inherited.
+                miPatchLive.ToolTipText = "Live patch requires opening from client memory — not wired in this phase.";
+            }
+            if (miRepackTre != null)
+            {
+                miRepackTre.Enabled = hasDoc && isTreArchive && !saveInFlight;
+                miRepackTre.ToolTipText = isTreArchive
+                    ? ""
+                    : "Open from a packed .tre to repack the source archive.";
+            }
+
+            btnSave.Enabled = hasDoc && !saveInFlight && (isLooseFile || isTreArchive || isUnknown);
+        }
+
+        private void OnSaveButtonClick(object sender, EventArgs e)
+        {
+            if (saveMenu == null) return;
+            saveMenu.Show(btnSave, new Point(0, btnSave.Height));
+        }
+
+        private async void OnSaveInPlaceClick(object sender, EventArgs e)
+        {
+            if (otDocument == null) return;
+            if (!(Source is OpenSource.LooseFile))
+            {
+                SetFailure("Cannot save in place — file came from .tre or unknown source. Use Save as loose override or Save As.");
+                return;
+            }
+            await DoFileSaveAsync(() => ObjectTemplateSaveTargets.SaveInPlace(otDocument, Source), "in place");
+        }
+
+        private async void OnSaveLooseOverrideClick(object sender, EventArgs e)
+        {
+            if (otDocument == null) return;
+            string clientRoot = ResolveClientRoot();
+            if (string.IsNullOrEmpty(clientRoot))
+            {
+                SetFailure("Could not locate the client root — use Save As… and we'll remember the directory.");
+                return;
+            }
+            string subDir = ini.GetString(SettingsSection, "looseOverrideDir");
+            if (string.IsNullOrEmpty(subDir))
+            {
+                subDir = "loose";
+                lblStatus.Text = "Saving to " + subDir
+                    + ". Change the loose-override directory in [" + SettingsSection + "] looseOverrideDir if needed.";
+                lblStatus.ForeColor = Colors.Font();
+            }
+            await DoFileSaveAsync(
+                () => ObjectTemplateSaveTargets.SaveLooseOverride(otDocument, Source, clientRoot, subDir),
+                "loose override");
+        }
+
+        private async void OnSaveAsClick(object sender, EventArgs e)
+        {
+            if (otDocument == null) return;
+            using (var sfd = new SaveFileDialog())
+            {
+                sfd.Title = "Save object template as…";
+                sfd.Filter = "Object template files (*.iff)|*.iff|All files (*.*)|*.*";
+                sfd.FileName = !string.IsNullOrEmpty(displayName) ? displayName : "untitled.iff";
+                if (sfd.ShowDialog(this) != DialogResult.OK) return;
+                string path = sfd.FileName;
+                await DoFileSaveAsync(() => ObjectTemplateSaveTargets.SaveToPath(otDocument, path), "save-as");
+            }
+        }
+
+        // CF-03: Mode 3 ships disabled; this handler is defensive (reachable only if somehow enabled).
+        private void OnPatchLiveClientClick(object sender, EventArgs e)
+        {
+            SetFailure("Live patch is disabled in this phase.");
+        }
+
+        private async void OnRepackTreClick(object sender, EventArgs e)
+        {
+            if (otDocument == null) return;
+            var ta = Source as OpenSource.TreArchive;
+            if (ta == null)
+            {
+                SetFailure("Open from a packed .tre to repack the source archive.");
+                return;
+            }
+
+            string archiveName = Path.GetFileName(ta.TrePath ?? "");
+            bool backupRequested;
+            using (var dlg = new FormSaveConfirmDialog(
+                heading: "Repack " + archiveName + "?",
+                body: "This rewrites the entire " + archiveName + " archive on disk and replaces it "
+                    + "atomically. Untouched entries are preserved byte-for-byte; only the edited entry "
+                    + "recompresses. If the client holds the archive open, the repack is refused without "
+                    + "a partial-write. Continue?",
+                acceptVerb: "Repack",
+                cancelVerb: "Cancel",
+                showBackupCheckbox: true,
+                backupCheckboxLabel: "Create a timestamped backup (" + archiveName + ".<yyyyMMdd-HHmmss>.bak) first"))
+            {
+                dlg.ShowDialog(this);
+                if (dlg.Outcome != FormSaveConfirmDialog.ConfirmOutcome.Accepted) return;
+                backupRequested = dlg.BackupRequested;
+            }
+
+            saveInFlight = true;
+            RefreshSaveMenuEnabledState();
+            RefreshReloadButtonState();
+            lblStatus.Text = "Saving (repack " + archiveName + ")…";
+            lblStatus.ForeColor = Colors.Font();
+
+            TreRepackSaveTarget.TreRepackResult result;
+            try
+            {
+                result = await ObjectTemplateSaveTargets.RepackIntoSourceTre(otDocument, ta, backupRequested)
+                    .ConfigureAwait(true);
+            }
+            catch (Exception ex)
+            {
+                SetFailure("Repack failed: " + ex.Message + " Your edits are kept in the editor.");
+                saveInFlight = false;
+                RefreshSaveMenuEnabledState();
+                RefreshReloadButtonState();
+                return;
+            }
+
+            saveInFlight = false;
+
+            switch (result)
+            {
+                case TreRepackSaveTarget.TreRepackResult.Replaced:
+                case TreRepackSaveTarget.TreRepackResult.BackedUpThenReplaced:
+                    lastSavedPath = ta.TrePath;
+                    lblStatus.Text = result == TreRepackSaveTarget.TreRepackResult.BackedUpThenReplaced
+                        ? "Repacked " + archiveName + " (backup created)"
+                        : "Repacked " + archiveName;
+                    lblStatus.ForeColor = Colors.Font();
+                    if (controller != null) controller.MarkSaved();
+                    DispatchReload(lastSavedPath);
+                    break;
+
+                case TreRepackSaveTarget.TreRepackResult.RefusedClientHoldsArchive_LooseOverrideRecommended:
+                    lblStatus.Text = "Client holds the archive — try Save as loose override instead.";
+                    lblStatus.ForeColor = Color.Red;
+                    break;
+
+                case TreRepackSaveTarget.TreRepackResult.Failed:
+                default:
+                    lblStatus.Text = "Repack failed — your edits are retained. If this is a V6000 (encrypted) archive, use Save as loose override.";
+                    lblStatus.ForeColor = Color.Red;
+                    break;
+            }
+
+            RefreshSaveMenuEnabledState();
+            RefreshReloadButtonState();
+        }
+
+        // Shared file-save orchestration (modes 1/2): the saveInFlight barrier disables Save▾ + Reload
+        // while the Task is in flight (stale-bytes barrier); on success MarkSaved() clears the dirty
+        // baseline + the reload is routed through the audit trail.
+        private async Task<bool> DoFileSaveAsync(
+            Func<Task<IffSaveTargets.SaveResult>> saveOp,
+            string modeLabel)
+        {
+            saveInFlight = true;
+            RefreshSaveMenuEnabledState();
+            RefreshReloadButtonState();
+            lblStatus.Text = "Saving (" + modeLabel + ")…";
+            lblStatus.ForeColor = Colors.Font();
+
+            IffSaveTargets.SaveResult result;
+            try
+            {
+                result = await saveOp().ConfigureAwait(true);
+            }
+            catch (Exception ex)
+            {
+                result = IffSaveTargets.SaveResult.Failure(ex.Message);
+            }
+
+            saveInFlight = false;
+
+            if (result.Ok)
+            {
+                lblStatus.Text = "Saved " + (displayName ?? Path.GetFileName(result.Path) ?? "<untitled>") + " (" + modeLabel + ")";
+                lblStatus.ForeColor = Colors.Font();
+                lastSavedPath = result.Path;
+                if (controller != null) controller.MarkSaved();
+                DispatchReload(result.Path);
+            }
+            else
+            {
+                lblStatus.Text = (result.Message ?? "Save failed.") + " Your edits are kept in the editor — try another save target.";
+                lblStatus.ForeColor = Color.Red;
+            }
+            RefreshSaveMenuEnabledState();
+            RefreshReloadButtonState();
+            return result.Ok;
+        }
+
+        // Routes the just-saved object-template asset through Phase 8's tiered reload dispatcher. The
+        // object-template case classifies as PendingNextSceneChange (tier-(b) per CF-05); the dispatch is
+        // for the routing-table audit trail — the user-facing reload copy stays the locked CF-05 wording.
+        private void DispatchReload(string savedPath)
+        {
+            if (string.IsNullOrEmpty(savedPath)) return;
+            try
+            {
+                ClientReloadDispatcher.Dispatch(savedPath, RootTypeForDispatch());
+            }
+            catch
+            {
+                // Dispatch gates on Game.IsRunning internally; never let a binding hiccup tear down
+                // the save-success path.
+            }
+        }
+
+        // The open template's root TypeId (e.g. SHOT/STOT/SBOT) so the classifier routes it via the
+        // object-template allowlist; falls back to null (conservative .iff fallback) if unavailable.
+        private string RootTypeForDispatch()
+        {
+            return otDocument != null && !string.IsNullOrEmpty(otDocument.RootType)
+                ? otDocument.RootType.Trim()
+                : null;
+        }
+
+        // Reload-button state: disabled while a save Task is in flight (stale-bytes barrier); hidden +
+        // disabled with the no-client tooltip when no live client is up. Otherwise enabled — OnReloadClicked
+        // surfaces the CF-05 locked candor.
+        private void RefreshReloadButtonState()
+        {
+            bool clientUp = false;
+            try { clientUp = Game.IsRunning; }
+            catch { clientUp = false; }
+
+            if (!clientUp)
+            {
+                btnReload.Enabled = false;
+                toolTip.SetToolTip(btnReload, "No live client — start SWG to apply edits in-session.");
+                lblReloadBadge.Visible = false;
+                return;
+            }
+
+            btnReload.Enabled = !saveInFlight;
+            toolTip.SetToolTip(btnReload, "State how/when the client re-resolves the edit (it never auto-triggers a reload).");
+            lblReloadBadge.Visible = otDocument != null;
         }
 
         // ── Keyboard shortcuts (Ctrl+Z / Ctrl+Y) ─────────────────────────────

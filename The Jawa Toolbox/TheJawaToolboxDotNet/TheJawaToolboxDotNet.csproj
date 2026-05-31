@@ -102,6 +102,16 @@
     <Compile Include="UI\Forms\FormObjectTemplateEditor.Designer.cs">
       <DependentUpon>FormObjectTemplateEditor.cs</DependentUpon>
     </Compile>
+    <Compile Include="UI\Forms\FormParamHexEditor.cs">
+      <SubType>Form</SubType>
+    </Compile>
+    <Compile Include="UI\Forms\FormParamHexEditor.Designer.cs">
+      <DependentUpon>FormParamHexEditor.cs</DependentUpon>
+    </Compile>
+    <Compile Include="UI\Controls\ObjectTemplateNumericUpDownEditingControl.cs">
+      <SubType>Component</SubType>
+    </Compile>
+    <Compile Include="Saving\ObjectTemplateSaveTargets.cs" />
     <Compile Include="UI\Forms\FormStfCsvImportPreviewDialog.cs">
       <SubType>Form</SubType>
     </Compile>

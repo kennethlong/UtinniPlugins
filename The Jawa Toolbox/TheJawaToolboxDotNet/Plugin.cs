@@ -105,6 +105,19 @@ namespace TJT
                 Log.Info("Failed to create FormStringTableEditor; String-table Editor will be unavailable: " + ex);
             }
 
+            // 11-03: register the Object Template Editor (the fifth and final V1 SubPanel) in the same
+            // try/catch isolation block. GetSubPanels() stays null — the MEF SPI is NOT widened
+            // (CON-M-01/02). The TRE Browser "Open in Object Template Editor" and IFF Editor "Switch to
+            // typed object-template view" hand-offs find this form by type in the forms list.
+            try
+            {
+                forms.Add(new FormObjectTemplateEditor(this));
+            }
+            catch (Exception ex)
+            {
+                Log.Info("Failed to create FormObjectTemplateEditor; Object Template Editor will be unavailable: " + ex);
+            }
+
             panels.Add(new SubPanelContainer("Controls", new SubPanel[]
             {
                 new ScenePanel(this, hotkeyManager, ini),

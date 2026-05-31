@@ -62,6 +62,7 @@ namespace TJT.UI.Forms
         private ToolStripMenuItem _miOpenInIffEditor;       // 08-05 Task 4
         private ToolStripMenuItem _miOpenInDatatableEditor; // 09-05 D-10.2 — Open in Datatable Editor
         private ToolStripMenuItem _miOpenInStringTableEditor; // 10-05 D-04 — Open in String-table Editor
+        private ToolStripMenuItem _miOpenInObjectTemplateEditor; // 11-03 — Open in Object Template Editor
 
         public FormTreBrowser(IEditorPlugin editorPlugin)
         {
@@ -158,6 +159,12 @@ namespace TJT.UI.Forms
             _miOpenInStringTableEditor = new ToolStripMenuItem("Open in String-table Editor");
             _miOpenInStringTableEditor.Click += OnOpenInStringTableEditor;
             _tvTreContextMenu.Items.Add(_miOpenInStringTableEditor);
+            // 11-03: Open in Object Template Editor — HIDDEN unless the entry is an .iff carrier whose
+            // payload is resolvable (the cheap path gate; the object-template structure is re-verified
+            // on click via OtHandoffPolicy.IsObjectTemplatePayload).
+            _miOpenInObjectTemplateEditor = new ToolStripMenuItem("Open in Object Template Editor");
+            _miOpenInObjectTemplateEditor.Click += OnOpenInObjectTemplateEditor;
+            _tvTreContextMenu.Items.Add(_miOpenInObjectTemplateEditor);
             _tvTreContextMenu.Opening += OnTvTreContextMenuOpening;
             tvTre.ContextMenuStrip = _tvTreContextMenu;
             // Right-click should select the underlying node so the menu's logic targets it.
@@ -209,6 +216,13 @@ namespace TJT.UI.Forms
             // is a secondary affordance for extension-less .stf entries, covered by the framework policy tests.
             _miOpenInStringTableEditor.Visible = StringTableHandoffPolicy.ShouldOfferStringTableEditor(pn.FullPath, null, d.EnumerateOnly);
             _miOpenInStringTableEditor.ToolTipText = "Opens this string table in the String-table Editor with TRE provenance.";
+
+            // 11-03: HIDE the Object-Template-Editor item unless the entry is an .iff carrier whose
+            // payload is resolvable. The payload is NOT resolved at menu-Opening time (TrePayloadResolver
+            // resolves lazily on click), so the gate is extension-only here; the object-template structure
+            // sniff (OtHandoffPolicy.IsObjectTemplatePayload) runs on click before the hand-off.
+            _miOpenInObjectTemplateEditor.Visible = OtHandoffPolicy.ShouldOfferObjectTemplateEditor(pn.FullPath, d.EnumerateOnly);
+            _miOpenInObjectTemplateEditor.ToolTipText = "Opens this object template in the Object Template Editor with TRE provenance.";
         }
 
         private void OnOpenInIffEditor(object sender, EventArgs e)
@@ -416,6 +430,82 @@ namespace TJT.UI.Forms
             foreach (IEditorForm f in editorPlugin.GetForms())
             {
                 FormStringTableEditor editor = f as FormStringTableEditor;
+                if (editor != null) return editor;
+            }
+            return null;
+        }
+
+        // 11-03: TRE Browser → Object Template Editor hand-off. Mirrors OnOpenInDatatableEditor: off-UI-
+        // thread payload resolve → BeginInvoke marshal → content-gate on OtHandoffPolicy.IsObjectTemplatePayload
+        // (the OT equivalent of IsDtiiPayload) → FindOrCreate → OpenFromTreEntry. Visibility is gated by
+        // OtHandoffPolicy.ShouldOfferObjectTemplateEditor (.iff extension) on the Opening event; the
+        // object-template structure is verified here on click.
+        private void OnOpenInObjectTemplateEditor(object sender, EventArgs e)
+        {
+            PathNode pn = tvTre.SelectedNode != null ? tvTre.SelectedNode.Tag as PathNode : null;
+            if (pn == null || !pn.IsLeaf) return;
+            TreEntryDescriptor d;
+            if (_index == null || !_index.TryGetDescriptor(pn.FullPath, out d)) return;
+            TreEntryDescriptor descriptor = d;
+            string logicalPath = pn.FullPath;
+            Task.Run(() =>
+            {
+                try
+                {
+                    byte[] payload;
+                    bool ok = TrePayloadResolver.TryResolve(descriptor, out payload);
+                    if (!IsHandleCreated) return;
+                    BeginInvoke((Action)(() =>
+                    {
+                        if (!ok)
+                        {
+                            lblStatus.Text = "Cannot open " + logicalPath + " — payload is enumerate-only.";
+                            return;
+                        }
+                        // Content gate: the visibility predicate is extension-based, so a non-object-template
+                        // .iff could reach here. Verify the object-template structure before handing off,
+                        // with a clean message otherwise.
+                        if (!OtHandoffPolicy.IsObjectTemplatePayload(payload))
+                        {
+                            lblStatus.Text = logicalPath + " is not an object template — use Open in IFF Editor.";
+                            return;
+                        }
+                        FormObjectTemplateEditor editor = FindOrCreateObjectTemplateEditor();
+                        if (editor == null)
+                        {
+                            lblStatus.Text = "Object Template Editor is unavailable in this session.";
+                            return;
+                        }
+                        editor.OpenFromTreEntry(
+                            payload,
+                            descriptor.ResolvedArchivePath,
+                            logicalPath,
+                            descriptor.ArchiveLocalOffset);
+                        editor.Show();
+                        editor.Activate();
+                    }));
+                }
+                catch (Exception ex)
+                {
+                    if (IsHandleCreated)
+                    {
+                        BeginInvoke((Action)(() =>
+                        {
+                            lblStatus.Text = "Open-in-Object-Template-Editor failed: " + ex.Message;
+                            lblStatus.ForeColor = Color.Red;
+                        }));
+                    }
+                }
+            });
+        }
+
+        // Find the FormObjectTemplateEditor instance the plugin registered in GetForms() and return it.
+        // Returns null if the editor failed to load (Plugin.cs registration sits inside a try/catch).
+        private FormObjectTemplateEditor FindOrCreateObjectTemplateEditor()
+        {
+            foreach (IEditorForm f in editorPlugin.GetForms())
+            {
+                FormObjectTemplateEditor editor = f as FormObjectTemplateEditor;
                 if (editor != null) return editor;
             }
             return null;

@@ -659,6 +659,7 @@ namespace TJT.UI.Forms
         private ToolStripMenuItem miMoveUp;
         private ToolStripMenuItem miMoveDown;
         private ToolStripMenuItem miSwitchToDatatableView; // 09-05 D-10.3 — hand-off to the Datatable Editor
+        private ToolStripMenuItem miSwitchToObjectTemplateView; // 11-03 — hand-off to the Object Template Editor
 
         private void BuildTreeContextMenu()
         {
@@ -675,12 +676,17 @@ namespace TJT.UI.Forms
             // loaded document's root TypeId is "DTII". NOT auto-route (the user keeps both windows).
             miSwitchToDatatableView = new ToolStripMenuItem("Switch to typed datatable view");
             miSwitchToDatatableView.Click += OnSwitchToDatatableViewClick;
+            // 11-03: manual hand-off to the typed Object Template Editor — visible only when the loaded
+            // document's root looks like an object template (DERV child OR digit version form). NOT
+            // auto-route (the user keeps both windows; mirrors the DTII switch above).
+            miSwitchToObjectTemplateView = new ToolStripMenuItem("Switch to typed object-template view");
+            miSwitchToObjectTemplateView.Click += OnSwitchToObjectTemplateViewClick;
             treeContextMenu.Items.AddRange(new ToolStripItem[] {
                 miAddChunk, miAddForm, miRemove, miRenameRetag, miEditFormSubType,
                 new ToolStripSeparator(),
                 miDuplicate, miMoveUp, miMoveDown,
                 new ToolStripSeparator(),
-                miSwitchToDatatableView
+                miSwitchToDatatableView, miSwitchToObjectTemplateView
             });
             treeContextMenu.Opening += OnTreeContextMenuOpening;
             iffChunkTree.StructuralOpMenu = treeContextMenu;
@@ -716,6 +722,47 @@ namespace TJT.UI.Forms
             if (miSwitchToDatatableView == null) return;
             miSwitchToDatatableView.Visible =
                 document != null && document.Root != null && document.Root.TypeId == "DTII";
+
+            // 11-03: the Object Template switch is visible only when the visible root looks like an
+            // object template (DERV derivation child OR a digit-tagged version form with a 4-byte
+            // leading count chunk) — the mutable-tree analog of ObjectTemplateDecoder.LooksLikeObjectTemplate.
+            if (miSwitchToObjectTemplateView != null)
+            {
+                miSwitchToObjectTemplateView.Visible =
+                    document != null && document.Root != null && LooksLikeObjectTemplate(document.Root);
+            }
+        }
+
+        // 11-03: mutable-tree structural sniff mirroring the framework
+        // ObjectTemplateDecoder.LooksLikeObjectTemplate (which takes a read-only IffChunk; the IFF Editor
+        // holds a MutableIffNode). HIDDEN-when-false visibility, never throws.
+        private static bool LooksLikeObjectTemplate(MutableIffNode root)
+        {
+            if (root == null || root.Kind != MutableIffNodeKind.Container) return false;
+            foreach (MutableIffNode child in root.Children)
+            {
+                if (child.Kind == MutableIffNodeKind.Container && child.SubTypeId == "DERV") return true;
+            }
+            foreach (MutableIffNode child in root.Children)
+            {
+                if (child.Kind != MutableIffNodeKind.Container) continue;
+                if (!IsAllDigits(child.SubTypeId)) continue;
+                foreach (MutableIffNode leaf in child.Children)
+                {
+                    if (leaf.Kind == MutableIffNodeKind.Leaf) return leaf.PayloadLength == 4;
+                }
+            }
+            return false;
+        }
+
+        private static bool IsAllDigits(string s)
+        {
+            if (string.IsNullOrEmpty(s) || s.Length != 4) return false;
+            foreach (char ch in s)
+            {
+                if (ch < '0' || ch > '9') return false;
+            }
+            return true;
         }
 
         private static int IndexOfNodeAmongSiblings(MutableIffNode node)
@@ -1612,6 +1659,36 @@ namespace TJT.UI.Forms
             foreach (IEditorForm f in editorPlugin.GetForms())
             {
                 FormDatatableEditor editor = f as FormDatatableEditor;
+                if (editor != null) return editor;
+            }
+            return null;
+        }
+
+        // 11-03: hand the in-memory MutableIffDocument + Source directly to the Object Template Editor
+        // (no re-parse — OpenFromMutableIff wraps via MutableObjectTemplate.FromMutableIff). Manual
+        // hand-off: this IFF Editor stays open so the user can switch back.
+        private void OnSwitchToObjectTemplateViewClick(object sender, EventArgs e)
+        {
+            if (document == null) return;
+            FormObjectTemplateEditor editor = FindOrCreateObjectTemplateEditor();
+            if (editor == null)
+            {
+                lblStatus.Text = "Object Template Editor is unavailable.";
+                lblStatus.ForeColor = Color.Red;
+                return;
+            }
+            editor.OpenFromMutableIff(this.document, this.Source, this.displayName);
+            editor.Show();
+            editor.Activate();
+        }
+
+        // Find the FormObjectTemplateEditor instance the plugin registered in GetForms() and return it.
+        // Mirrors FindOrCreateDatatableEditor (the small duplication is the accepted V1 posture).
+        private FormObjectTemplateEditor FindOrCreateObjectTemplateEditor()
+        {
+            foreach (IEditorForm f in editorPlugin.GetForms())
+            {
+                FormObjectTemplateEditor editor = f as FormObjectTemplateEditor;
                 if (editor != null) return editor;
             }
             return null;

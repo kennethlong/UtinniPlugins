@@ -1027,9 +1027,9 @@ namespace TJT.UI.Forms
 
         private void OnReloadClicked(object sender, EventArgs e)
         {
-            // CON-M-05 + CF-05: Utinni does NOT call ObjectTemplateList::reload. We surface the LOCKED
-            // candor copy and route the saved asset through the routing-table audit trail only (which
-            // classifies it as PendingNextSceneChange — no fresh reload hook is invoked).
+            // CON-M-05 + CF-05: Utinni does NOT invoke the engine's template-list refetch hook. We
+            // surface the LOCKED candor copy and route the saved asset through the routing-table audit
+            // trail only (which classifies it as PendingNextSceneChange — no fresh refetch is invoked).
             if (!string.IsNullOrEmpty(lastSavedPath))
             {
                 bool clientUp = false;

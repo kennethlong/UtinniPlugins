@@ -163,23 +163,26 @@ namespace TJT.UI.Forms
             // Default provenance is Unknown (W-3 contract). Open paths override.
             Source = OpenSource.Unknown.Instance;
 
-            // Toolbar tooltips (R-02 glyph-button tooltips on the Find pane).
+            // Toolbar tooltips.
             toolTip.SetToolTip(btnOpen, "Open an object template (choose a file).");
             toolTip.SetToolTip(btnSave, "Save the current object template (choose a target).");
             toolTip.SetToolTip(btnUndo, "Undo (Ctrl+Z)");
             toolTip.SetToolTip(btnRedo, "Redo (Ctrl+Y)");
             toolTip.SetToolTip(btnPromote, "Promote the selected inherited field to a local override.");
             toolTip.SetToolTip(btnRevert, "Revert the selected local override back to inherited.");
-            toolTip.SetToolTip(btnFind, "Find (Ctrl+F)");
-            toolTip.SetToolTip(btnReplace, "Replace (Ctrl+H)");
             toolTip.SetToolTip(tglShowInherited, "Show inherited fields. Toggle off to show local overrides only.");
             toolTip.SetToolTip(btnReload, "State how/when the client re-resolves the edit (it never auto-triggers a reload).");
-            toolTip.SetToolTip(btnFindPrev, "Find previous (Shift+F3)");
-            toolTip.SetToolTip(btnFindNext, "Find next (F3)");
-            toolTip.SetToolTip(btnFindClose, "Close (Esc)");
+
+            // Find/Replace was a clone artifact carried over from FormDatatableEditor (controls only,
+            // never wired). A single-template param grid does not need it (unlike the large-grid
+            // datatable / string-table editors). Hide the toolbar buttons + the never-shown pane so
+            // nothing promises functionality the OT editor does not implement. Easy to re-add later.
+            btnFind.Visible = false;
+            btnReplace.Visible = false;
+            pnlFindReplace.Visible = false;
 
             // Open… is enabled from the start; the rest become enabled on LoadDocument
-            // (Undo / Redo / Find / Replace / Show inherited / Save / Promote / Revert / Reload).
+            // (Undo / Redo / Show inherited / Save / Promote / Revert / Reload).
             btnOpen.Click += OnOpenClicked;
             btnUndo.Click += OnUndoClicked;
             btnRedo.Click += OnRedoClicked;
@@ -242,7 +245,6 @@ namespace TJT.UI.Forms
         {
             ini.AddSetting(SettingsSection, "width", "1200", UtINI.Value.Types.VtInt);
             ini.AddSetting(SettingsSection, "height", "760", UtINI.Value.Types.VtInt);
-            ini.AddSetting(SettingsSection, "findReplaceVisible", "0", UtINI.Value.Types.VtBool);
             ini.AddSetting(SettingsSection, "showInheritedRows", "1", UtINI.Value.Types.VtBool);
             ini.AddSetting(SettingsSection, "looseOverrideDir", "", UtINI.Value.Types.VtString);
         }
@@ -704,8 +706,6 @@ namespace TJT.UI.Forms
 
         private void EnableDocumentControls()
         {
-            btnFind.Enabled = true;
-            btnReplace.Enabled = true;
             tglShowInherited.Enabled = true;
             RefreshSaveMenuEnabledState();
             RefreshReloadButtonState();

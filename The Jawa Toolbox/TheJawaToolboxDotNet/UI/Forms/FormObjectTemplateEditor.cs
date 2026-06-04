@@ -85,6 +85,14 @@ namespace TJT.UI.Forms
         private MutableObjectTemplate otDocument;
         private EffectiveTemplateView effectiveView;
 
+        // Plan 13-06 (RESID-01): the committed common-class param->type schema (D-08). Loaded once,
+        // cached, and degrades to an empty schema if absent/malformed — never throws on the open path
+        // (ObjectTemplateSchemaLoader.LoadCommon). Drives the typed display of the ~17% multi-chunk
+        // list/struct params (slots / attributes / hair-customization) that the codec routes to a
+        // RawBytesHexFallback: structured params get a typed LABEL, the rare tail degrades to
+        // typed-label + hex. DISPLAY-ONLY — the codec Encode path + byte-exactness are untouched.
+        private readonly ObjectTemplateSchema otSchema = ObjectTemplateSchemaLoader.LoadCommon();
+
         // Editor-local undo/redo controller (Plan 11-02 framework type). Null until LoadDocument binds.
         private ObjectTemplateEditController controller;
 
@@ -512,11 +520,26 @@ namespace TJT.UI.Forms
             }
         }
 
-        private static string FormatEffectiveValue(EffectiveField field)
+        private string FormatEffectiveValue(EffectiveField field)
         {
             if (field.Origin == EffectiveFieldOriginKind.UnresolvedBase || field.EffectiveValue == null)
             {
                 return "(unresolved)";
+            }
+
+            // Plan 13-06 (RESID-01, D-07): a multi-chunk list/struct residual that the schema knows
+            // gets a typed LABEL in front of its bytes — "<className-prefix>[N elems] · <hex>" reads as
+            // structured-typed rather than a bare Consolas hex blob; the rare/exotic tail the schema
+            // does not cover degrades to the existing hex (graceful). DISPLAY-ONLY (codec untouched).
+            if (field.EffectiveValue.Kind == ObjectTemplateParamKind.RawBytesHexFallback)
+            {
+                ObjectTemplateParamSchema s = SchemaFor(field);
+                if (s != null && s.IsStructured)
+                {
+                    byte[] raw = field.EffectiveValue.GetRawBytesCopy();
+                    return "[" + s.Type + " " + ListTypeLabel(s.ListType) + ", " + (raw == null ? 0 : raw.Length)
+                        + " bytes] " + BytesToHex(raw);
+                }
             }
             return DescribeValue(field.EffectiveValue);
         }
@@ -575,13 +598,44 @@ namespace TJT.UI.Forms
             }
         }
 
-        private static string FormatType(EffectiveField field)
+        private string FormatType(EffectiveField field)
         {
             if (field.Origin == EffectiveFieldOriginKind.UnresolvedBase || field.EffectiveValue == null)
             {
                 return "(unknown)";
             }
+
+            // Plan 13-06 (RESID-01): for the multi-chunk list/struct residual (RawBytesHexFallback),
+            // surface the schema's TYPED identity instead of the generic codec label — slots /
+            // attributes / hair-customization read as e.g. "STRUCT (list)" rather than raw hex.
+            if (field.EffectiveValue.Kind == ObjectTemplateParamKind.RawBytesHexFallback)
+            {
+                ObjectTemplateParamSchema s = SchemaFor(field);
+                if (s != null && s.IsStructured)
+                {
+                    return s.Type + " (" + ListTypeLabel(s.ListType) + ")";
+                }
+            }
             return field.EffectiveValue.ParamTypeLabel;
+        }
+
+        // Resolves the committed schema entry for a param by (RootType class, field name); null on
+        // no-match (graceful — the editor keeps the existing hex display for that param).
+        private ObjectTemplateParamSchema SchemaFor(EffectiveField field)
+        {
+            if (otSchema == null || otDocument == null || field == null) return null;
+            return otSchema.Classify(otDocument.RootType, field.FieldName);
+        }
+
+        private static string ListTypeLabel(ObjectTemplateListType listType)
+        {
+            switch (listType)
+            {
+                case ObjectTemplateListType.LIST_LIST:       return "list";
+                case ObjectTemplateListType.LIST_INT_ARRAY:  return "int[]";
+                case ObjectTemplateListType.LIST_ENUM_ARRAY: return "enum[]";
+                default:                                     return "scalar";
+            }
         }
 
         // ── Cell-state visual overlays (UI-SPEC § Cell-state visual overlays) ──

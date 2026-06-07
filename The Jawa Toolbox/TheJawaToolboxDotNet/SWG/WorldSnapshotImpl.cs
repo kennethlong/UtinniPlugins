@@ -175,6 +175,126 @@ namespace TJT.SWG
             }
         }
 
+        // ── 15-01 WorldSnapshot bulk operations (PROD-W2-WS / D-01/D-02) ──────────
+        //
+        // Each bulk method derives an ordered composition plan via the pure framework
+        // helper WorldSnapshotBulkComposer (BCL-only; no native/WinForms refs), then
+        // enqueues EXACTLY ONE GroundSceneCallbacks.AddUpdateLoopCall that iterates the
+        // plan and composes the shipped per-node WorldSnapshotCommands. The whole bulk
+        // therefore lands atomically on one game-frame and is undoable (each shipped
+        // command snapshots the node + pushes through AddUndoCommand). NEVER mutate the
+        // snapshot on the WinForms thread — that corrupts SWG's allocator (Pattern 1,
+        // project_rh_snapshot_no_heap_alloc). Zero new format code (D-02): the table +
+        // these ops are a new view over the native WorldSnapshotReaderWriter node list.
+
+        public void BulkMove(IEnumerable<int> selectedIds, float dx, float dy, float dz)
+        {
+            var plan = WorldSnapshotBulkComposer.ComposeMove(selectedIds, dx, dy, dz);
+
+            GroundSceneCallbacks.AddUpdateLoopCall(() =>
+            {
+                foreach (var descriptor in plan)
+                {
+                    var node = WorldSnapshotReaderWriter.Get().GetNodeById(descriptor.NodeId);
+                    if (node == null)
+                    {
+                        continue;
+                    }
+
+                    var newTransform = new Transform(node.Transform);
+                    newTransform.SetPosition(
+                        node.Transform.Position.X + descriptor.DeltaX,
+                        node.Transform.Position.Y + descriptor.DeltaY,
+                        node.Transform.Position.Z + descriptor.DeltaZ);
+
+                    editorPlugin.AddUndoCommand(this,
+                        new AddUndoCommandEventArgs(new WorldSnapshotNodePositionChangedCommand(node, node.Transform, newTransform)));
+
+                    var obj = Network.GetObjectById(node.Id);
+                    if (obj != null)
+                    {
+                        obj.Transform.Position = newTransform.Position;
+                        obj.PositionAndRotationChanged(false, newTransform.Position);
+                    }
+
+                    node.Transform.Position = newTransform.Position;
+                }
+
+                WorldSnapshot.DetailLevelChanged();
+            });
+        }
+
+        public void BulkDelete(IEnumerable<int> selectedIds)
+        {
+            var plan = WorldSnapshotBulkComposer.ComposeDelete(selectedIds);
+
+            GroundSceneCallbacks.AddUpdateLoopCall(() =>
+            {
+                foreach (var descriptor in plan)
+                {
+                    var node = WorldSnapshotReaderWriter.Get().GetNodeById(descriptor.NodeId);
+                    if (node == null)
+                    {
+                        continue;
+                    }
+
+                    editorPlugin.AddUndoCommand(this,
+                        new AddUndoCommandEventArgs(new RemoveWorldSnapshotNodeCommand(node)));
+                    WorldSnapshot.RemoveNode(node);
+                }
+            });
+        }
+
+        public void BulkRetemplate(IEnumerable<int> selectedIds, string newTemplate)
+        {
+            // Retemplate composes a Remove + Add PAIR per node (the helper plan is already
+            // ordered Remove-then-Add per node). We capture each node's transform BEFORE
+            // removing it so the freshly-added new-template node lands in the same spot.
+            var plan = WorldSnapshotBulkComposer.ComposeRetemplate(selectedIds, newTemplate);
+
+            GroundSceneCallbacks.AddUpdateLoopCall(() =>
+            {
+                Transform pendingTransform = null;
+
+                foreach (var descriptor in plan)
+                {
+                    if (descriptor.Kind == WorldSnapshotBulkOpKind.Remove)
+                    {
+                        var node = WorldSnapshotReaderWriter.Get().GetNodeById(descriptor.NodeId);
+                        if (node == null)
+                        {
+                            pendingTransform = null;
+                            continue;
+                        }
+
+                        pendingTransform = new Transform(node.Transform);
+                        editorPlugin.AddUndoCommand(this,
+                            new AddUndoCommandEventArgs(new RemoveWorldSnapshotNodeCommand(node)));
+                        WorldSnapshot.RemoveNode(node);
+                    }
+                    else // Add (the retemplate half)
+                    {
+                        var newNode = WorldSnapshot.CreateAddNode(descriptor.NewObjectTemplate, Game.Player.ObjectToParent);
+                        if (newNode == null)
+                        {
+                            continue;
+                        }
+
+                        if (pendingTransform != null)
+                        {
+                            newNode.Transform.Position = pendingTransform.Position;
+                            newNode.Transform.CopyRotation(pendingTransform);
+                        }
+
+                        editorPlugin.AddUndoCommand(this,
+                            new AddUndoCommandEventArgs(new AddWorldSnapshotNodeCommand(newNode)));
+                    }
+                }
+
+                WorldSnapshot.DetailLevelChanged();
+            });
+        }
+
         public void ToggleNodeEditing()
         {
             bool result = !EnableNodeEditing;

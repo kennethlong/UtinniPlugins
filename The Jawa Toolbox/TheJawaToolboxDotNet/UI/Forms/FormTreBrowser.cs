@@ -63,6 +63,7 @@ namespace TJT.UI.Forms
         private ToolStripMenuItem _miOpenInDatatableEditor; // 09-05 D-10.2 — Open in Datatable Editor
         private ToolStripMenuItem _miOpenInStringTableEditor; // 10-05 D-04 — Open in String-table Editor
         private ToolStripMenuItem _miOpenInObjectTemplateEditor; // 11-03 — Open in Object Template Editor
+        private ToolStripMenuItem _miOpenInParticleEditor; // 15-06 — Open in Particle Editor
 
         public FormTreBrowser(IEditorPlugin editorPlugin)
         {
@@ -165,6 +166,12 @@ namespace TJT.UI.Forms
             _miOpenInObjectTemplateEditor = new ToolStripMenuItem("Open in Object Template Editor");
             _miOpenInObjectTemplateEditor.Click += OnOpenInObjectTemplateEditor;
             _tvTreContextMenu.Items.Add(_miOpenInObjectTemplateEditor);
+            // 15-06: Open in Particle Editor — HIDDEN unless the entry is a resolvable .prt (the cheap
+            // path gate; the FORM PEFT structure is re-verified on click via
+            // ParticleHandoffPolicy.IsParticlePayload).
+            _miOpenInParticleEditor = new ToolStripMenuItem("Open in Particle Editor");
+            _miOpenInParticleEditor.Click += OnOpenInParticleEditor;
+            _tvTreContextMenu.Items.Add(_miOpenInParticleEditor);
             _tvTreContextMenu.Opening += OnTvTreContextMenuOpening;
             tvTre.ContextMenuStrip = _tvTreContextMenu;
             // Right-click should select the underlying node so the menu's logic targets it.
@@ -223,6 +230,12 @@ namespace TJT.UI.Forms
             // sniff (OtHandoffPolicy.IsObjectTemplatePayload) runs on click before the hand-off.
             _miOpenInObjectTemplateEditor.Visible = OtHandoffPolicy.ShouldOfferObjectTemplateEditor(pn.FullPath, d.EnumerateOnly);
             _miOpenInObjectTemplateEditor.ToolTipText = "Opens this object template in the Object Template Editor with TRE provenance.";
+
+            // 15-06: HIDE the Particle-Editor item unless the entry is a resolvable .prt. The payload is
+            // NOT resolved at menu-Opening time, so the gate is extension-only here; the FORM PEFT sniff
+            // (ParticleHandoffPolicy.IsParticlePayload) runs on click before the hand-off.
+            _miOpenInParticleEditor.Visible = ParticleHandoffPolicy.ShouldOfferParticleEditor(pn.FullPath, d.EnumerateOnly);
+            _miOpenInParticleEditor.ToolTipText = "Opens this particle effect in the Particle Editor with TRE provenance.";
         }
 
         private void OnOpenInIffEditor(object sender, EventArgs e)
@@ -506,6 +519,81 @@ namespace TJT.UI.Forms
             foreach (IEditorForm f in editorPlugin.GetForms())
             {
                 FormObjectTemplateEditor editor = f as FormObjectTemplateEditor;
+                if (editor != null) return editor;
+            }
+            return null;
+        }
+
+        // 15-06: TRE Browser → Particle Editor hand-off. Mirrors OnOpenInObjectTemplateEditor: off-UI-
+        // thread payload resolve → BeginInvoke marshal → content-gate on ParticleHandoffPolicy.IsParticlePayload
+        // (the FORM PEFT sniff) → FindOrCreate → OpenFromTreEntry. Visibility is gated by
+        // ParticleHandoffPolicy.ShouldOfferParticleEditor (.prt extension) on the Opening event; the
+        // FORM PEFT structure is verified here on click.
+        private void OnOpenInParticleEditor(object sender, EventArgs e)
+        {
+            PathNode pn = tvTre.SelectedNode != null ? tvTre.SelectedNode.Tag as PathNode : null;
+            if (pn == null || !pn.IsLeaf) return;
+            TreEntryDescriptor d;
+            if (_index == null || !_index.TryGetDescriptor(pn.FullPath, out d)) return;
+            TreEntryDescriptor descriptor = d;
+            string logicalPath = pn.FullPath;
+            Task.Run(() =>
+            {
+                try
+                {
+                    byte[] payload;
+                    bool ok = TrePayloadResolver.TryResolve(descriptor, out payload);
+                    if (!IsHandleCreated) return;
+                    BeginInvoke((Action)(() =>
+                    {
+                        if (!ok)
+                        {
+                            lblStatus.Text = "Cannot open " + logicalPath + " — payload is enumerate-only.";
+                            return;
+                        }
+                        // Content gate: the visibility predicate is extension-based, so a non-particle
+                        // .prt could reach here. Verify the FORM PEFT structure before handing off.
+                        if (!ParticleHandoffPolicy.IsParticlePayload(payload))
+                        {
+                            lblStatus.Text = logicalPath + " is not a particle effect — use Open in IFF Editor.";
+                            return;
+                        }
+                        FormParticleEditor editor = FindOrCreateParticleEditor();
+                        if (editor == null)
+                        {
+                            lblStatus.Text = "Particle Editor is unavailable in this session.";
+                            return;
+                        }
+                        editor.OpenFromTreEntry(
+                            payload,
+                            descriptor.ResolvedArchivePath,
+                            logicalPath,
+                            descriptor.ArchiveLocalOffset);
+                        editor.Show();
+                        editor.Activate();
+                    }));
+                }
+                catch (Exception ex)
+                {
+                    if (IsHandleCreated)
+                    {
+                        BeginInvoke((Action)(() =>
+                        {
+                            lblStatus.Text = "Open-in-Particle-Editor failed: " + ex.Message;
+                            lblStatus.ForeColor = Color.Red;
+                        }));
+                    }
+                }
+            });
+        }
+
+        // Find the FormParticleEditor instance the plugin registered in GetForms() and return it.
+        // Returns null if the editor failed to load (Plugin.cs registration sits inside a try/catch).
+        private FormParticleEditor FindOrCreateParticleEditor()
+        {
+            foreach (IEditorForm f in editorPlugin.GetForms())
+            {
+                FormParticleEditor editor = f as FormParticleEditor;
                 if (editor != null) return editor;
             }
             return null;

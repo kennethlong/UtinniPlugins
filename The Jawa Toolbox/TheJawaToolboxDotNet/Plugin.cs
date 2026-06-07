@@ -118,6 +118,18 @@ namespace TJT
                 Log.Info("Failed to create FormObjectTemplateEditor; Object Template Editor will be unavailable: " + ex);
             }
 
+            // 15-06: register the Particle Editor (Wave-2, PROD-W2-PRT) in the same try/catch isolation
+            // block. GetSubPanels() stays null — the MEF SPI is NOT widened (CON-M-01/02). The TRE Browser
+            // "Open in Particle Editor" hand-off (gated on ParticleHandoffPolicy) finds this form by type.
+            try
+            {
+                forms.Add(new FormParticleEditor(this));
+            }
+            catch (Exception ex)
+            {
+                Log.Info("Failed to create FormParticleEditor; Particle Editor will be unavailable: " + ex);
+            }
+
             panels.Add(new SubPanelContainer("Controls", new SubPanel[]
             {
                 new ScenePanel(this, hotkeyManager, ini),

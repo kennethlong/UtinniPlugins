@@ -53,10 +53,22 @@ namespace TJT.UI.SubPanels
 
         private readonly UtINI ini;
 
+        // 15-01: the plugin host + the companion placements-table window (singleton per editor session;
+        // hide-not-dispose so a re-launch re-Shows the same instance). The placements window is a VIEW
+        // over the SAME loaded snapshot this panel drives.
+        private readonly IEditorPlugin editorPlugin;
+        private FormSnapshotPlacements placementsForm;
+
+        // 15-01: the snapshot the panel has actually loaded into the scene (null = none). Drives the
+        // placements window's loaded-vs-empty state honestly (a name selected in the combo is NOT the
+        // same as a loaded snapshot).
+        private string loadedSnapshotName;
+
         public SnapshotPanel(IEditorPlugin editorPlugin, HotkeyManager hotkeyManager, UtINI ini) : base("Snapshot")
         {
             InitializeComponent();
 
+            this.editorPlugin = editorPlugin;
             worldSnapshot = new WorldSnapshotImpl(this, editorPlugin, hotkeyManager);
 
             this.ini = ini;
@@ -79,12 +91,51 @@ namespace TJT.UI.SubPanels
 
         private void btnLoad_Click(object sender, EventArgs e)
         {
-            worldSnapshot.Load(cmbSnapshots.Items[cmbSnapshots.SelectedIndex].ToString());
+            string name = cmbSnapshots.Items[cmbSnapshots.SelectedIndex].ToString();
+            worldSnapshot.Load(name);
+            loadedSnapshotName = name;
+
+            // Re-baseline the companion placements table to the newly-loaded snapshot (if open). The
+            // load lands on a later game-frame; SetSnapshot triggers a (game-thread) re-read.
+            if (placementsForm != null && placementsForm.Visible)
+            {
+                placementsForm.SetSnapshot(name);
+            }
         }
 
         private void btnUnload_Click(object sender, EventArgs e)
         {
             worldSnapshot.Unload();
+            loadedSnapshotName = null;
+
+            if (placementsForm != null && placementsForm.Visible)
+            {
+                placementsForm.SetSnapshot(null); // clears the table; closing the window does NOT unload
+            }
+        }
+
+        // 15-01: open the companion resizable placements-table window. Singleton per editor session —
+        // already open → Activate(); otherwise create + Show(). The window hosts the flat placements
+        // table + multi-select bulk move/delete/retemplate over the loaded snapshot's native node list.
+        private void btnPlacements_Click(object sender, EventArgs e)
+        {
+            if (placementsForm == null || placementsForm.IsDisposed)
+            {
+                placementsForm = new FormSnapshotPlacements(worldSnapshot, editorPlugin);
+            }
+
+            // Pass the ACTUALLY-loaded snapshot (not merely the combo selection) so the window honestly
+            // shows the empty-state until a snapshot is loaded from this panel.
+            placementsForm.SetSnapshot(loadedSnapshotName);
+
+            if (placementsForm.Visible)
+            {
+                placementsForm.Activate();
+            }
+            else
+            {
+                placementsForm.Show();
+            }
         }
 
         private void btnReload_Click(object sender, EventArgs e)

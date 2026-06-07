@@ -60,6 +60,19 @@
       <HintPath>..\..\..\Utinni\bin\$(Configuration)\UtinniCoreDotNet.dll</HintPath>
       <Private>False</Private>
     </Reference>
+    <!-- 14-01: UtinniCoreDotNet.Saving.LooseOverridePath PHYSICALLY lives in the
+         netstandard2.0 UtinniCoreDotNet.PathContainment assembly; the net472
+         UtinniCoreDotNet.dll only [TypeForwardedTo]s it. With <Private>False</Private>
+         on the UtinniCoreDotNet reference above, RAR does not auto-pull the
+         forwarded-to implementation assembly into the C# compiler's reference set,
+         so the forwarded LooseOverridePath fails to resolve (CS0103) in the
+         Save-target files. Reference it explicitly so the compiler can follow the
+         type-forward. CopyLocal=false: the framework build already copies it next to
+         UtinniCoreDotNet.dll in Utinni\bin\$(Configuration)\. -->
+    <Reference Include="UtinniCoreDotNet.PathContainment">
+      <HintPath>..\..\..\Utinni\bin\$(Configuration)\UtinniCoreDotNet.PathContainment.dll</HintPath>
+      <Private>False</Private>
+    </Reference>
   </ItemGroup>
   <ItemGroup>
     <Compile Include="Plugin.cs" />
@@ -169,6 +182,18 @@
     </Compile>
     <Compile Include="UI\Forms\FormSnapshotSaveAsDialog.Designer.cs">
       <DependentUpon>FormSnapshotSaveAsDialog.cs</DependentUpon>
+    </Compile>
+    <Compile Include="UI\Forms\FormSnapshotPlacements.cs">
+      <SubType>Form</SubType>
+    </Compile>
+    <Compile Include="UI\Forms\FormSnapshotPlacements.Designer.cs">
+      <DependentUpon>FormSnapshotPlacements.cs</DependentUpon>
+    </Compile>
+    <Compile Include="UI\Forms\FormSnapshotBulkMoveDialog.cs">
+      <SubType>Form</SubType>
+    </Compile>
+    <Compile Include="UI\Forms\FormSnapshotBulkRetemplateDialog.cs">
+      <SubType>Form</SubType>
     </Compile>
     <Compile Include="UI\SubPanels\GraphicsPanel.cs">
       <SubType>UserControl</SubType>

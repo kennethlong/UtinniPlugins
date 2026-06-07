@@ -53,6 +53,7 @@ namespace TJT.UI.SubPanels
         private void InitializeComponent()
         {
             this.btnReload = new UtinniCoreDotNet.UI.Controls.UtinniButton();
+            this.btnPlacements = new UtinniCoreDotNet.UI.Controls.UtinniButton();
             this.btnLoad = new UtinniCoreDotNet.UI.Controls.UtinniButton();
             this.cmbSnapshots = new UtinniCoreDotNet.UI.Controls.UtinniComboBox();
             this.btnUnload = new UtinniCoreDotNet.UI.Controls.UtinniButton();
@@ -133,9 +134,24 @@ namespace TJT.UI.SubPanels
             this.btnReload.UseDisableColor = true;
             this.btnReload.UseVisualStyleBackColor = false;
             this.btnReload.Click += new System.EventHandler(this.btnReload_Click);
-            // 
+            //
+            // btnPlacements (15-01 — opens the companion placements-table window)
+            //
+            this.btnPlacements.BackColor = System.Drawing.Color.FromArgb(((int)(((byte)(0)))), ((int)(((byte)(122)))), ((int)(((byte)(204)))));
+            this.btnPlacements.DrawOutline = false;
+            this.btnPlacements.FlatStyle = System.Windows.Forms.FlatStyle.Popup;
+            this.btnPlacements.ForeColor = System.Drawing.Color.WhiteSmoke;
+            this.btnPlacements.Location = new System.Drawing.Point(246, 30);
+            this.btnPlacements.Name = "btnPlacements";
+            this.btnPlacements.Size = new System.Drawing.Size(156, 20);
+            this.btnPlacements.TabIndex = 332;
+            this.btnPlacements.Text = "Placements…";
+            this.btnPlacements.UseDisableColor = true;
+            this.btnPlacements.UseVisualStyleBackColor = false;
+            this.btnPlacements.Click += new System.EventHandler(this.btnPlacements_Click);
+            //
             // btnLoad
-            // 
+            //
             this.btnLoad.BackColor = System.Drawing.Color.FromArgb(((int)(((byte)(0)))), ((int)(((byte)(122)))), ((int)(((byte)(204)))));
             this.btnLoad.DrawOutline = false;
             this.btnLoad.Enabled = false;
@@ -1034,6 +1050,7 @@ namespace TJT.UI.SubPanels
             this.Controls.Add(this.btnRemoveSelectedNode);
             this.Controls.Add(this.btnAddNode);
             this.Controls.Add(this.btnSave);
+            this.Controls.Add(this.btnPlacements);
             this.Controls.Add(this.btnUnload);
             this.Controls.Add(this.btnReload);
             this.Controls.Add(this.btnLoad);
@@ -1052,6 +1069,7 @@ namespace TJT.UI.SubPanels
 
         #endregion
         private UtinniCoreDotNet.UI.Controls.UtinniButton btnReload;
+        private UtinniCoreDotNet.UI.Controls.UtinniButton btnPlacements;
         private UtinniCoreDotNet.UI.Controls.UtinniButton btnLoad;
         private UtinniCoreDotNet.UI.Controls.UtinniComboBox cmbSnapshots;
         private UtinniCoreDotNet.UI.Controls.UtinniButton btnUnload;

@@ -295,6 +295,32 @@ namespace TJT.SWG
             });
         }
 
+        // 15-01: drive the shipped gizmo + per-node panel controls for a single placements-table row
+        // selection. Mirrors OnTarget's node→controls path but keyed by the table's node id rather than
+        // the in-world look-at target. Runs on the game thread (gizmo enable + control update). When the
+        // node's in-world object is resolvable we enable the gizmo on it; the panel controls always
+        // update so the modder sees the selected node's id / template / position.
+        public void SelectNodeById(int nodeId)
+        {
+            GroundSceneCallbacks.AddUpdateLoopCall(() =>
+            {
+                var node = WorldSnapshotReaderWriter.Get().GetNodeById(nodeId);
+                if (node == null)
+                {
+                    return;
+                }
+
+                var obj = Network.GetObjectById(node.Id);
+                if (obj != null && EnableNodeEditing)
+                {
+                    EnableGizmo(obj);
+                }
+
+                string cellName = node.ParentId != 0 ? "cell " + node.ParentId : "";
+                snapshotPanel.UpdateSelectedNodeControls(node, cellName, "");
+            });
+        }
+
         public void ToggleNodeEditing()
         {
             bool result = !EnableNodeEditing;

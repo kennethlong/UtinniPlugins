@@ -79,6 +79,11 @@ namespace TJT.UI.Forms
         private const string ReloadBadgeLiveCapable = "Re-triggers live instances on Preview.";
         private const string ReloadBadgeDegraded = "Reloads on next scene change or relog.";
         private const string PreviewUnavailableTooltip = "No live client — start SWG to preview in-scene.";
+        // B6 (15-16): honest disabled-Preview reason for the running-but-no-hook case. Distinct from
+        // PreviewUnavailableTooltip (no-client). Must NOT imply a reachable hook and stays consistent
+        // with the LOCKED degraded reload-badge copy (ReloadBadgeDegraded "…next scene change or relog.").
+        private const string PreviewNoHookTooltip =
+            "Live preview isn't wired this build — edits show on the next scene change or relog.";
         private const string PatchLiveDisabledTooltip =
             "Live patch requires opening from client memory — not wired in this phase.";
         private const string BoundarySentence =
@@ -91,6 +96,13 @@ namespace TJT.UI.Forms
 
         // The typed mutable model. Null until LoadDocument binds a document.
         private MutableParticleEffect effect;
+
+        // B4/B5 (15-16): the MutableIffNode the param grid is currently bound to (the emitter/leaf node
+        // whose params are shown). RefreshMutable rebuilds the TreeView's TreeNode wrappers from the SAME
+        // MutableIffDocument, so these model-node references stay valid across a refresh — letting
+        // AfterModelMutated re-bind the grid for the live selection without a reselect. Null when nothing
+        // is selected.
+        private MutableIffNode currentParamNode;
 
         // Friendly display name + last-saved path for the loaded document.
         private string displayName;
@@ -388,6 +400,7 @@ namespace TJT.UI.Forms
         // greyed-out Consolas hex with the LOCKED D-05 tooltip (the visible surface of degrade-don't-abort).
         private void BindParamGrid(MutableIffNode node)
         {
+            currentParamNode = node; // B4/B5: remember the bound node so AfterModelMutated can re-bind it.
             gridSurface.SuspendLayout();
             try
             {
@@ -597,6 +610,15 @@ namespace TJT.UI.Forms
         private void AfterModelMutated()
         {
             emitterTree.RefreshMutable(effect.SourceIff);
+            // B4/B5 (15-16): RefreshMutable only rebuilt the tree's TreeNode wrappers (and reset the
+            // TreeView selection). Re-bind the param grid to the node it was showing so the edited
+            // leaf's cell re-renders with the new bytes immediately — no reselect needed. The model
+            // MutableIffNode reference survives the refresh (same MutableIffDocument), and the leaf
+            // edited belongs to (or IS) that node. BindParamGrid re-derives currentParamNode itself.
+            if (currentParamNode != null)
+            {
+                BindParamGrid(currentParamNode);
+            }
             UpdateDirtyVisuals();
             UpdateCounters();
             RefreshButtonsState();
@@ -1006,15 +1028,19 @@ namespace TJT.UI.Forms
             btnRedo.Enabled = hasDoc && redoStack.Count > 0;
             btnExplain.Enabled = hasDoc;
 
-            bool previewAvail = hasDoc && PreviewAvailable();
-            btnPreview.Enabled = previewAvail;
-            toolTip.SetToolTip(btnPreview, previewAvail
-                ? "Re-trigger this effect's live instances in the client."
-                : PreviewUnavailableTooltip);
-
             bool clientUp = false;
             try { clientUp = Game.IsRunning; }
             catch { clientUp = false; }
+
+            bool previewAvail = hasDoc && PreviewAvailable();
+            btnPreview.Enabled = previewAvail;
+            // B6 (15-16): when Preview is disabled, give an HONEST reason by state. !Game.IsRunning ->
+            // the existing no-client copy; running-but-no-hook (Game.IsRunning but the retrigger hook is
+            // not reachable, the actual state this phase) -> the no-hook copy that does not imply a hook
+            // exists and matches the LOCKED degraded reload-badge wording.
+            toolTip.SetToolTip(btnPreview, previewAvail
+                ? "Re-trigger this effect's live instances in the client."
+                : (clientUp ? PreviewNoHookTooltip : PreviewUnavailableTooltip));
             btnReload.Enabled = hasDoc && clientUp && !saveInFlight;
 
             // Honest reload badge: live-capable copy ONLY when injected + hook reachable; else degraded.

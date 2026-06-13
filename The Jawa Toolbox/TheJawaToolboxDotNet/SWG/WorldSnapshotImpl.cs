@@ -266,6 +266,12 @@ namespace TJT.SWG
                 // gizmo + per-node panel controls so it does not linger at a removed location.
                 DisableGizmo();
                 snapshotPanel.UpdateSelectedNodeControls(null);
+
+                // A7 (15-16): refresh the grid immediately like BulkMove/BulkRetemplate, rather than
+                // relying solely on the 250ms ScheduleRefresh timer. (The already-rendered in-world
+                // object still persists until the next scene change — the engine does not de-spawn it
+                // without one; the delete-confirm copy discloses this.)
+                WorldSnapshot.DetailLevelChanged();
             });
         }
 

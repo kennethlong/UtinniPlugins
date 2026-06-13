@@ -78,6 +78,7 @@ namespace TJT.UI.Forms
         private const string EmptyBody = "Load a snapshot from the Snapshot panel to see its placements.";
 
         private readonly WorldSnapshotImpl worldSnapshot;
+        private readonly IEditorPlugin editorPlugin;
         private readonly UtINI ini;
         private readonly ToolTip toolTip = new ToolTip();
 
@@ -112,6 +113,7 @@ namespace TJT.UI.Forms
             }
 
             this.worldSnapshot = worldSnapshot;
+            this.editorPlugin = editorPlugin;
             this.ini = editorPlugin.GetConfig();
 
             CreateSettings();
@@ -445,6 +447,38 @@ namespace TJT.UI.Forms
                 OnDeleteSelectedClicked(sender, EventArgs.Empty);
                 e.Handled = true;
             }
+        }
+
+        // ── 15-10 GAP 1.3: route Ctrl+Z / Ctrl+Y from this child window to the EDITOR undo manager ──
+        //
+        // The single shared UndoRedoManager lives in FormMain; this plugin form reaches it through the
+        // IEditorPlugin.Undo / .Redo seam (wired by FormMain, null-checked here). Without this override
+        // Ctrl+Z in the placements window was a silent no-op.
+        //
+        // ORDERING (FIFO update-loop): the WS undo command bodies marshal their work through
+        // GroundSceneCallbacks.AddUpdateLoopCall (game thread), and RefreshTable() ALSO enqueues its
+        // native node-list re-read on the SAME update loop. So we invoke Undo FIRST (enqueues the
+        // command body) and call RefreshTable() SECOND (enqueues the re-read) — FIFO guarantees the
+        // grid is re-read AFTER the undo applies, reflecting the reverted state, not a stale pre-undo
+        // snapshot. We never refresh before the undo is enqueued, and never refresh synchronously
+        // outside the update loop.
+        protected override bool ProcessCmdKey(ref Message msg, Keys keyData)
+        {
+            if (keyData == (Keys.Control | Keys.Z))
+            {
+                editorPlugin.Undo?.Invoke(); // enqueues the undo command body on the update loop
+                RefreshTable();              // enqueued AFTER → re-reads the post-undo node list (FIFO)
+                return true;
+            }
+
+            if (keyData == (Keys.Control | Keys.Y))
+            {
+                editorPlugin.Redo?.Invoke(); // enqueues the redo command body on the update loop
+                RefreshTable();              // enqueued AFTER → re-reads the post-redo node list (FIFO)
+                return true;
+            }
+
+            return base.ProcessCmdKey(ref msg, keyData);
         }
 
         // ── Bulk operations ────────────────────────────────────────────────────

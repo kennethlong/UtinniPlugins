@@ -103,12 +103,20 @@ namespace TJT.SWG
             snapshotPanel.UpdateSceneAvailability(false);
         }
 
+        // 15-10 GAP 1.2: every snapshot boundary (Load / Unload / Reload) re-reads the authored
+        // native node list, so any undo command built against the OLD list now holds dangling node
+        // state. Clear the editor undo stack at each boundary so no stale command can replay against
+        // a mismatched list (the secondary half of the A9 crash cluster; belt-and-suspenders with the
+        // 15-09 null-guards). The clear is a managed UI-manager call routed through the IEditorPlugin
+        // seam (null-conditional — the seam may be unset in odd hosts). The native (re)read stays
+        // inside AddUpdateLoopCall (game-thread / allocator-safety, Pattern 1).
         public void Load(string filename)
         {
             GroundSceneCallbacks.AddUpdateLoopCall(() =>
             {
                 WorldSnapshot.Load(filename);
             });
+            editorPlugin.ClearUndoStack?.Invoke();
         }
 
         public void Unload()
@@ -117,6 +125,9 @@ namespace TJT.SWG
             {
                 WorldSnapshot.Unload();
             });
+            editorPlugin.ClearUndoStack?.Invoke();
+            // GAP 2: the selection gizmo would otherwise linger at a now-removed node.
+            DisableGizmo();
         }
 
         public void Reload()
@@ -125,6 +136,9 @@ namespace TJT.SWG
             {
                 WorldSnapshot.Reload();
             });
+            editorPlugin.ClearUndoStack?.Invoke();
+            // GAP 2: the selection gizmo would otherwise linger at a now-removed node.
+            DisableGizmo();
         }
 
         public void Save()
@@ -169,6 +183,11 @@ namespace TJT.SWG
                         {
                             editorPlugin.AddUndoCommand(this, new AddUndoCommandEventArgs(new RemoveWorldSnapshotNodeCommand(node)));
                             WorldSnapshot.RemoveNode(node);
+
+                            // GAP 2: the removed node was the selected one — clear the now-stale gizmo
+                            // and the per-node panel controls (mirrors OnTarget's target-gone path).
+                            DisableGizmo();
+                            snapshotPanel.UpdateSelectedNodeControls(null);
                         }
                     }
                 });
@@ -242,6 +261,11 @@ namespace TJT.SWG
                         new AddUndoCommandEventArgs(new RemoveWorldSnapshotNodeCommand(node)));
                     WorldSnapshot.RemoveNode(node);
                 }
+
+                // GAP 2: the deleted nodes may include the gizmo's selected node — clear the now-stale
+                // gizmo + per-node panel controls so it does not linger at a removed location.
+                DisableGizmo();
+                snapshotPanel.UpdateSelectedNodeControls(null);
             });
         }
 

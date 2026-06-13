@@ -143,7 +143,20 @@ namespace TJT.UI
             }
         }
 
-        // Locates utinni-cli.exe: next to the executing assembly first, then next to the host process.
+        // Markers that identify the Utinni inject root (the bin/Release deploy the maintainer launched).
+        // utinni-cli.exe is deployed alongside these by the reassembly plan (15-17).
+        private static readonly string[] InjectRootMarkers = { "Launcher.exe", "UtinniCoreDotNet.dll" };
+
+        // Locates utinni-cli.exe. Probe order:
+        //   1. The executing-assembly dir (Plugins/TheJawaToolbox/ — where TheJawaToolboxDotNet.dll lives).
+        //   2. The host-process dir (under injection this is the SWGEmu.exe dir, NOT the Utinni deploy — wrong
+        //      under injection, but kept for the standalone-editor case where the host IS the editor host).
+        //   3. The Utinni INJECT ROOT, computed as the dir TWO levels up from the executing-assembly dir
+        //      (Plugins/TheJawaToolbox/<dll> -> Plugins -> bin/Release = inject root). Under injection the
+        //      host-process dir is SWGEmu.exe's, so this two-levels-up probe is what actually finds the
+        //      deployed utinni-cli.exe (15-SMOKE B7). If the two-levels-up dir doesn't carry the exe, walk
+        //      up a bounded number of parents looking for the CLI directly OR an inject-root marker
+        //      (Launcher.exe / UtinniCoreDotNet.dll) and probe the CLI there.
         private static string LocateCli()
         {
             try
@@ -155,6 +168,38 @@ namespace TJT.UI
                 string procDir = Path.GetDirectoryName(Process.GetCurrentProcess().MainModule.FileName);
                 candidate = Path.Combine(procDir ?? "", CliExeName);
                 if (File.Exists(candidate)) return candidate;
+
+                // Candidate 3: the inject root, two levels up from the executing-assembly dir
+                // (Plugins/TheJawaToolbox -> Plugins -> bin/Release). Guard each GetDirectoryName for null.
+                string pluginsDir = Path.GetDirectoryName(asmDir ?? "");
+                string injectRoot = pluginsDir != null ? Path.GetDirectoryName(pluginsDir) : null;
+                if (!string.IsNullOrEmpty(injectRoot))
+                {
+                    candidate = Path.Combine(injectRoot, CliExeName);
+                    if (File.Exists(candidate)) return candidate;
+                }
+
+                // Robustness: bounded walk-up (<= 3 parents) from asmDir, looking for the CLI directly OR an
+                // inject-root marker (then probe the CLI in that marker dir). Scoped to the editor's own
+                // install tree under the inject root (T-15-15-02 accepted: read-only decode-iff, trusted deploy).
+                string dir = asmDir;
+                for (int i = 0; i < 3 && !string.IsNullOrEmpty(dir); i++)
+                {
+                    dir = Path.GetDirectoryName(dir);
+                    if (string.IsNullOrEmpty(dir)) break;
+
+                    candidate = Path.Combine(dir, CliExeName);
+                    if (File.Exists(candidate)) return candidate;
+
+                    foreach (string marker in InjectRootMarkers)
+                    {
+                        if (File.Exists(Path.Combine(dir, marker)))
+                        {
+                            string cliInRoot = Path.Combine(dir, CliExeName);
+                            if (File.Exists(cliInRoot)) return cliInRoot;
+                        }
+                    }
+                }
             }
             catch
             {

@@ -153,6 +153,13 @@ namespace TJT
 
         public EventHandler<AddUndoCommandEventArgs> AddUndoCommand { get; set; }
 
+        // 15-10 editor-undo seam — wired by FormMain to the shared UndoRedoManager. Child forms
+        // (e.g. FormSnapshotPlacements) invoke these (null-checked) to route Ctrl+Z / Ctrl+Y and to
+        // clear the stack on snapshot boundaries.
+        public Action Undo { get; set; }
+        public Action Redo { get; set; }
+        public Action ClearUndoStack { get; set; }
+
         public HotkeyManager GetHotkeyManager()
         {
             return hotkeyManager;

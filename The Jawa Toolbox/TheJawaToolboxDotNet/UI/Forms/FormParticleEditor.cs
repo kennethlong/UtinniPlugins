@@ -725,12 +725,23 @@ namespace TJT.UI.Forms
         private void OnPreviewClicked(object sender, EventArgs e)
         {
             if (effect == null) return;
-            if (!PreviewAvailable())
+
+            // B6 (15-19): the button is now ENABLED whenever a doc is open (RefreshButtonsState gates on
+            // hasDoc only), because WinForms never renders a ToolTip over a disabled control — so the
+            // honest no-hook reason was unreachable. Branch here on the actual reachability: when the
+            // native hot-retrigger hook is reachable AND the client is up, run the real path; otherwise
+            // surface the LOCKED degraded candor (reachable now by CLICK, and by hover via the tooltip),
+            // performing NO retrigger and NEVER implying a live hook exists (T-15-19-01).
+            bool clientUp = false;
+            try { clientUp = Game.IsRunning; }
+            catch { clientUp = false; }
+
+            if (!(clientUp && IsRetriggerHookReachable()))
             {
-                // Honest degraded path (never over-promise): the button is disabled in this state, but
-                // guard defensively.
-                lblStatus.Text = "No live retrigger hook — " + ReloadBadgeDegraded;
-                lblStatus.ForeColor = Colors.Font();
+                // Honest degraded path (never over-promise). Keep no-client distinct from no-hook, and use
+                // the dimmed/informational styling so it reads as candor, not an error. No retrigger.
+                lblStatus.Text = clientUp ? PreviewNoHookTooltip : PreviewUnavailableTooltip;
+                lblStatus.ForeColor = Colors.FontDisabled();
                 return;
             }
 
@@ -1033,11 +1044,17 @@ namespace TJT.UI.Forms
             catch { clientUp = false; }
 
             bool previewAvail = hasDoc && PreviewAvailable();
-            btnPreview.Enabled = previewAvail;
-            // B6 (15-16): when Preview is disabled, give an HONEST reason by state. !Game.IsRunning ->
-            // the existing no-client copy; running-but-no-hook (Game.IsRunning but the retrigger hook is
-            // not reachable, the actual state this phase) -> the no-hook copy that does not imply a hook
-            // exists and matches the LOCKED degraded reload-badge wording.
+            // B6 (15-19): keep Preview ENABLED whenever a doc is open — NOT gated on clientUp/hookReachable.
+            // WinForms does not render a ToolTip over a disabled control, so the honest no-hook/no-client
+            // reason was unreachable when the button was disabled (15-18 live defect). Enabling the button
+            // makes the candor reachable on BOTH hover (tooltip below) and click (OnPreviewClicked surfaces
+            // the same LOCKED copy via lblStatus). OnPreviewClicked still performs NO retrigger unless the
+            // hook is genuinely reachable, so this never over-promises a live hook (T-15-19-01).
+            btnPreview.Enabled = hasDoc;
+            // When the live retrigger is available -> the live-capable hint; running-but-no-hook (the actual
+            // state this phase) -> the no-hook copy that does not imply a hook exists and matches the LOCKED
+            // degraded reload-badge wording; no client -> the no-client copy. no-client stays distinct from
+            // no-hook.
             toolTip.SetToolTip(btnPreview, previewAvail
                 ? "Re-trigger this effect's live instances in the client."
                 : (clientUp ? PreviewNoHookTooltip : PreviewUnavailableTooltip));

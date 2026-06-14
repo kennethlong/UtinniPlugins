@@ -109,10 +109,16 @@ namespace TJT.Saving
             }
             else if (loose != null)
             {
-                // For a loose source the "relative" form is just the file name (the user
-                // already picked the absolute path; we don't preserve the original directory
-                // tree when shipping to the override).
-                relAssetPath = Path.GetFileName(loose.Path);
+                // 15-20 (15-SMOKE Checklist D-ii): a raw Open… dialog yields only an absolute
+                // filesystem path. Deriving relAssetPath as Path.GetFileName(loose.Path) flattened
+                // the override (loose\ui_auc.stf) so the SWG client — which resolves by the logical
+                // subpath (string\en\ui_auc.stf) — silently never picked it up. Recover the logical
+                // subpath by making the opened absolute path relative to the resolved client root
+                // (loose-prefix stripped for round-trip parity). Outside the root, TryFromAbsolute
+                // returns false and we keep the original filename fallback (degrade, never throw).
+                relAssetPath = LogicalAssetPath.TryFromAbsolute(loose.Path, resolvedRoot, out string logical)
+                    ? logical
+                    : Path.GetFileName(loose.Path);
             }
             else
             {

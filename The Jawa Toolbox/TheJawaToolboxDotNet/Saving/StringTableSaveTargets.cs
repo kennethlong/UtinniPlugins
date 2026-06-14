@@ -89,7 +89,13 @@ namespace TJT.Saving
             var tre = source as OpenSource.TreArchive;
             var loose = source as OpenSource.LooseFile;
             if (tre != null) relAssetPath = tre.LogicalPath;
-            else if (loose != null) relAssetPath = Path.GetFileName(loose.Path);
+            // 15-20 (15-SMOKE Checklist D-ii): preserve the logical subpath of a raw-Open… loose
+            // file so the override lands at loose\string\en\ui_auc.stf (where the client resolves it)
+            // rather than flat loose\ui_auc.stf. Outside the root, fall back to the filename.
+            else if (loose != null)
+                relAssetPath = LogicalAssetPath.TryFromAbsolute(loose.Path, resolvedRoot, out string logical)
+                    ? logical
+                    : Path.GetFileName(loose.Path);
             else return IffSaveTargets.SaveResult.Failure(
                 "Cannot resolve archive record — use Save As to write to a chosen file.");
 

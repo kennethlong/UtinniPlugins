@@ -64,6 +64,7 @@ namespace TJT.UI.Forms
         private ToolStripMenuItem _miOpenInStringTableEditor; // 10-05 D-04 — Open in String-table Editor
         private ToolStripMenuItem _miOpenInObjectTemplateEditor; // 11-03 — Open in Object Template Editor
         private ToolStripMenuItem _miOpenInParticleEditor; // 15-06 — Open in Particle Editor
+        private ToolStripMenuItem _miOpenInTerrainEditor; // 21-03 — Open in Terrain Editor
 
         public FormTreBrowser(IEditorPlugin editorPlugin)
         {
@@ -172,6 +173,13 @@ namespace TJT.UI.Forms
             _miOpenInParticleEditor = new ToolStripMenuItem("Open in Particle Editor");
             _miOpenInParticleEditor.Click += OnOpenInParticleEditor;
             _tvTreContextMenu.Items.Add(_miOpenInParticleEditor);
+            // 21-03: Open in Terrain Editor — HIDDEN unless the selected entry is a resolvable .trn. The
+            // hand-off launches the singleton FormTerrainEditor (owned by the docked TerrainSubPanel reached
+            // via GetStandalonePanels()) read-only — the first commit is "Save As Override…" (D-08; the TRE
+            // is never edited in place). The .trn is decoded on click inside the editor's own try/catch.
+            _miOpenInTerrainEditor = new ToolStripMenuItem("Open in Terrain Editor");
+            _miOpenInTerrainEditor.Click += OnOpenInTerrainEditor;
+            _tvTreContextMenu.Items.Add(_miOpenInTerrainEditor);
             _tvTreContextMenu.Opening += OnTvTreContextMenuOpening;
             tvTre.ContextMenuStrip = _tvTreContextMenu;
             // Right-click should select the underlying node so the menu's logic targets it.
@@ -236,6 +244,14 @@ namespace TJT.UI.Forms
             // (ParticleHandoffPolicy.IsParticlePayload) runs on click before the hand-off.
             _miOpenInParticleEditor.Visible = ParticleHandoffPolicy.ShouldOfferParticleEditor(pn.FullPath, d.EnumerateOnly);
             _miOpenInParticleEditor.ToolTipText = "Opens this particle effect in the Particle Editor with TRE provenance.";
+
+            // 21-03: HIDE the Terrain-Editor item unless the entry is a resolvable .trn. The payload is NOT
+            // resolved at menu-Opening time (TrePayloadResolver resolves lazily on click), so the gate is
+            // extension-only here; the terrain codec verifies (and degrades, never hard-fails) the FORM PTAT
+            // structure inside FormTerrainEditor.OpenFromTreEntry on click.
+            _miOpenInTerrainEditor.Visible = !d.EnumerateOnly &&
+                string.Equals(Path.GetExtension(pn.FullPath), ".trn", StringComparison.OrdinalIgnoreCase);
+            _miOpenInTerrainEditor.ToolTipText = "Opens this terrain in the Terrain Editor (read-only — first save writes a loose override).";
         }
 
         private void OnOpenInIffEditor(object sender, EventArgs e)
@@ -299,6 +315,88 @@ namespace TJT.UI.Forms
             {
                 FormIffEditor editor = f as FormIffEditor;
                 if (editor != null) return editor;
+            }
+            return null;
+        }
+
+        // 21-03 — TRE Browser hand-off to the Terrain Editor. Unlike the IFF/Datatable/etc. editors (which
+        // are Forms in GetForms()), the terrain editor is a roomy host LAUNCHED by the docked TerrainSubPanel
+        // (D-02), so the hand-off target is the SubPanel instance reached via GetStandalonePanels() (the
+        // "Controls" container) — consistent with D-02 (the docked SubPanel owns the singleton Form). Mirrors
+        // OnOpenInIffEditor: resolve the payload OFF the UI thread, then marshal back to OpenFromTre.
+        private void OnOpenInTerrainEditor(object sender, EventArgs e)
+        {
+            PathNode pn = tvTre.SelectedNode != null ? tvTre.SelectedNode.Tag as PathNode : null;
+            if (pn == null || !pn.IsLeaf) return;
+            TreEntryDescriptor d;
+            if (_index == null || !_index.TryGetDescriptor(pn.FullPath, out d)) return;
+            TreEntryDescriptor descriptor = d;
+            string logicalPath = pn.FullPath;
+            Task.Run(() =>
+            {
+                try
+                {
+                    byte[] payload;
+                    bool ok = TrePayloadResolver.TryResolve(descriptor, out payload);
+                    if (!IsHandleCreated) return;
+                    BeginInvoke((Action)(() =>
+                    {
+                        if (!ok)
+                        {
+                            lblStatus.Text = "Cannot open " + logicalPath + " — payload is enumerate-only.";
+                            return;
+                        }
+                        TJT.UI.SubPanels.TerrainSubPanel panel = FindTerrainSubPanel();
+                        if (panel == null)
+                        {
+                            lblStatus.Text = "Terrain Editor is unavailable in this session.";
+                            return;
+                        }
+                        // The host decodes inside its OWN try/catch (red status on failure — never a hard
+                        // throw); first commit is "Save As Override…" (D-08, host-enforced).
+                        panel.OpenFromTre(payload, descriptor.ResolvedArchivePath, logicalPath);
+                    }));
+                }
+                catch (Exception ex)
+                {
+                    if (IsHandleCreated)
+                    {
+                        BeginInvoke((Action)(() =>
+                        {
+                            lblStatus.Text = "Open-in-Terrain-Editor failed: " + ex.Message;
+                            lblStatus.ForeColor = Color.Red;
+                        }));
+                    }
+                }
+            });
+        }
+
+        // Locate the docked TerrainSubPanel the plugin registered in the GetStandalonePanels() "Controls"
+        // container (the docked SubPanel owns the singleton FormTerrainEditor host — D-02). The container is
+        // a FlowLayoutPanel whose children are CollapsiblePanels each wrapping a SubPanel, so we walk the
+        // control tree (the wrapped SubPanel is private on CollapsiblePanel). Returns null if the SubPanel
+        // failed to load (its ctor sits inside a try/catch — a throwing ctor surfaces a state label; a hard
+        // MEF drop would leave it absent).
+        private TJT.UI.SubPanels.TerrainSubPanel FindTerrainSubPanel()
+        {
+            foreach (SubPanelContainer container in editorPlugin.GetStandalonePanels())
+            {
+                if (container == null) continue;
+                TJT.UI.SubPanels.TerrainSubPanel found = FindTerrainSubPanelIn(container);
+                if (found != null) return found;
+            }
+            return null;
+        }
+
+        private static TJT.UI.SubPanels.TerrainSubPanel FindTerrainSubPanelIn(Control parent)
+        {
+            if (parent == null) return null;
+            foreach (Control c in parent.Controls)
+            {
+                TJT.UI.SubPanels.TerrainSubPanel panel = c as TJT.UI.SubPanels.TerrainSubPanel;
+                if (panel != null) return panel;
+                TJT.UI.SubPanels.TerrainSubPanel nested = FindTerrainSubPanelIn(c);
+                if (nested != null) return nested;
             }
             return null;
         }

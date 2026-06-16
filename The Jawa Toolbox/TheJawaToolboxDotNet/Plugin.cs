@@ -130,12 +130,19 @@ namespace TJT
                 Log.Info("Failed to create FormParticleEditor; Particle Editor will be unavailable: " + ex);
             }
 
+            // 21-03: the docked Terrain entry SubPanel (D-01, PROD-W2-TRN-05) joins the existing
+            // SubPanelContainer("Controls", …) array — the established docked-SubPanel surface. GetSubPanels()
+            // STAYS null below: the MEF SPI is NOT widened (CON-M-01/02, STAB-04), matching every shipped
+            // SubPanel. A throwing SubPanel ctor in this array literal would fail the WHOLE compose, so the
+            // guard is the TerrainSubPanel's OWN ctor try/catch (D-09) — the array element can't host a
+            // statement-level try, matching the established sibling registration.
             panels.Add(new SubPanelContainer("Controls", new SubPanel[]
             {
                 new ScenePanel(this, hotkeyManager, ini),
                 new SnapshotPanel(this, hotkeyManager, ini),
+                new TerrainSubPanel(this, hotkeyManager, ini),
                 new PlayerPanel(hotkeyManager),
-                new FreeCamPanel(hotkeyManager), 
+                new FreeCamPanel(hotkeyManager),
                 new GraphicsPanel(ini),
                 new MiscPanel(ini)
             }));

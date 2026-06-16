@@ -131,6 +131,12 @@
     <Compile Include="UI\Forms\FormParticleEditor.Designer.cs">
       <DependentUpon>FormParticleEditor.cs</DependentUpon>
     </Compile>
+    <Compile Include="UI\Forms\FormTerrainEditor.cs">
+      <SubType>Form</SubType>
+    </Compile>
+    <Compile Include="UI\Forms\FormTerrainEditor.Designer.cs">
+      <DependentUpon>FormTerrainEditor.cs</DependentUpon>
+    </Compile>
     <Compile Include="UI\ParticleReadAssist.cs" />
     <Compile Include="Saving\ParticleSaveTargets.cs" />
     <Compile Include="UI\Forms\FormStfCsvImportPreviewDialog.cs">

@@ -399,6 +399,18 @@ namespace TJT.UI.Forms
 
         private void OnOpenClicked(object sender, EventArgs e)
         {
+            PromptOpenLooseOverride();
+        }
+
+        /// <summary>
+        /// Shows the host's "Open Terrain Override…" file picker and, on OK, opens the chosen loose-override
+        /// <c>.trn</c> in place. Exposed so the thin docked <c>TerrainSubPanel</c> can trigger the SAME picker
+        /// (one source of the <c>.trn</c> dialog) instead of running a modal dialog of its own. No-ops if the
+        /// layout failed to build.
+        /// </summary>
+        public void PromptOpenLooseOverride()
+        {
+            if (!layoutReady) return;
             using (var ofd = new OpenFileDialog())
             {
                 ofd.Title = "Open Terrain Override…";

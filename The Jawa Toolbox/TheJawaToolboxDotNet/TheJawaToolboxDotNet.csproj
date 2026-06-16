@@ -246,6 +246,12 @@
     <Compile Include="UI\SubPanels\ScenePanel.Designer.cs">
       <DependentUpon>ScenePanel.cs</DependentUpon>
     </Compile>
+    <Compile Include="UI\SubPanels\TerrainSubPanel.cs">
+      <SubType>UserControl</SubType>
+    </Compile>
+    <Compile Include="UI\SubPanels\TerrainSubPanel.Designer.cs">
+      <DependentUpon>TerrainSubPanel.cs</DependentUpon>
+    </Compile>
     <Compile Include="Saving\ClientReloadDispatcher.cs" />
     <Compile Include="Saving\DatatableCsvSerializer.cs" />
     <Compile Include="Saving\DatatableSaveTargets.cs" />

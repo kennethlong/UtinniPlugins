@@ -67,6 +67,7 @@ namespace TJT.Saving
     public static class TerrainSaveTargets
     {
         private const string LayerItemHeaderForm = "IHDR";
+        private const string LayerForm = "LAYR";
         private const string DataLeafTypeId = "DATA";
 
         // ─────────────────────────────────────────────────────────────────────
@@ -131,14 +132,30 @@ namespace TJT.Saving
                     "No LAYR FORM container found for stable id '" + layerFormStableId + "'.", "layerFormStableId");
             }
 
-            // The IHDR child FORM directly under the LAYR FORM carries the active-flag DATA leaf. Walk the
-            // LAYR's children for the IHDR container, then its DATA leaf, re-deriving the leaf's stable id with
-            // the SAME prefix shape DeriveStableId produces (parentPrefix = layerFormStableId + "/").
-            string layerPrefix = layerFormStableId + "/";
-            for (int i = 0; i < layerForm.Children.Count; i++)
+            // Mirror TgenDecoder.DecodeLayer: a real LAYR FORM nests its IHDR (+ child nodes) under a single
+            // version-form body, which contributes a stable-id segment. Descend into it so the IHDR DATA leaf
+            // id we return resolves through FindNodeByStableId on the TRUE DOM — the 21-04 live-smoke
+            // "no IHDR DATA child leaf" defect on real high-era terrain (naboo.trn). The synthesizer's
+            // collapsed fixture (layer FORM sub-type "0003", not "LAYR") skips this descent unchanged.
+            MutableIffNode walkRoot = layerForm;
+            string walkPrefix = layerFormStableId + "/";
+            if (string.Equals(layerForm.SubTypeId, LayerForm, StringComparison.Ordinal))
             {
-                MutableIffNode child = layerForm.Children[i];
-                string childId = MutableIffDocument.DeriveStableId(child, layerPrefix, i);
+                MutableIffNode versionBody = FirstContainerChild(layerForm);
+                if (versionBody != null)
+                {
+                    walkRoot = versionBody;
+                    walkPrefix = layerFormStableId + "/"
+                        + MutableIffDocument.DeriveStableId(versionBody, "", IndexOf(layerForm, versionBody)) + "/";
+                }
+            }
+
+            // Walk walkRoot's children for the IHDR container, then its DATA leaf, re-deriving the leaf's
+            // stable id with the SAME prefix shape DeriveStableId produces.
+            for (int i = 0; i < walkRoot.Children.Count; i++)
+            {
+                MutableIffNode child = walkRoot.Children[i];
+                string childId = MutableIffDocument.DeriveStableId(child, walkPrefix, i);
                 if (child.Kind == MutableIffNodeKind.Container
                     && string.Equals(child.SubTypeId, LayerItemHeaderForm, StringComparison.Ordinal))
                 {
@@ -382,6 +399,27 @@ namespace TJT.Saving
         {
             if (doc == null || doc.Root == null) return null;
             return FindNodeRecursive(doc.Root, "", 0, stableId);
+        }
+
+        // The first container (FORM) child of a node, or null. Mirrors TgenDecoder.FirstContainerChild so the
+        // LAYR -> version-body descent is identical on both the decode and save sides.
+        private static MutableIffNode FirstContainerChild(MutableIffNode node)
+        {
+            for (int i = 0; i < node.Children.Count; i++)
+            {
+                if (node.Children[i].Kind == MutableIffNodeKind.Container) return node.Children[i];
+            }
+            return null;
+        }
+
+        // The physical child index of `child` within `parent` (DeriveStableId ordinal). 0 if not found.
+        private static int IndexOf(MutableIffNode parent, MutableIffNode child)
+        {
+            for (int i = 0; i < parent.Children.Count; i++)
+            {
+                if (ReferenceEquals(parent.Children[i], child)) return i;
+            }
+            return 0;
         }
 
         private static MutableIffNode FindNodeRecursive(MutableIffNode node, string parentPrefix, int ordinal, string targetId)

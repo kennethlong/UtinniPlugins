@@ -34,6 +34,7 @@ using System;
 using System.Drawing;
 using System.Globalization;
 using System.IO;
+using System.Threading.Tasks;
 using System.Windows.Forms;
 using UtinniCore.Utinni;                       // Game.IsRunning (P/Invoke — ALWAYS try/catch)
 using UtinniCoreDotNet.Formats.Iff;            // OpenSource
@@ -103,6 +104,21 @@ namespace TJT.UI.Forms
         private string lastSavedPath;
         // True when an edit is pending in the in-memory DOM but not yet saved to disk.
         private bool hasPendingEdit;
+
+        // ── Pending-edit descriptor (the ONE fixed-length field/active-flag edit awaiting Save/Preview).
+        //    Carries everything SaveLooseOverride/ApplyFieldEdit need: the resolved DATA leaf id, the tag,
+        //    version, field name, and the new value string. Null when no edit is staged. ──
+        private sealed class PendingEdit
+        {
+            public string StableLeafId;
+            public string Tag;
+            public string Version;
+            public string FieldName;
+            public string Value;
+            public TreeNode DirtyTreeNode;   // the tree node to tint + ● glyph
+            public string DirtyBaseLabel;    // its label without the ● glyph (for re-render)
+        }
+        private PendingEdit pendingEdit;
 
         // ── Controls (built imperatively in BuildLayout). ──
         private UtinniLabel lblBanner;
@@ -516,44 +532,373 @@ namespace TJT.UI.Forms
             RenderFieldPane(refData);
         }
 
-        // Task 1 baseline render: shows read-only context for any selection and never throws. Task 2
-        // replaces the editable branches with typed rows + the active-flag toggle.
+        // Renders the field pane for the selected tree node. NEVER throws — degrade-not-fail throughout:
+        // typed (IsEditable) nodes get editable rows; raw-preserved/dead/palette/family/name render a
+        // read-only generic list with the matching verbatim hint copy (21-UI-SPEC).
         private void RenderFieldPane(TreeNodeRef refData)
         {
-            if (refData == null)
+            try
             {
+                if (refData == null) { ShowNoSelection(); return; }
+                if (refData.Palette != null)
+                {
+                    ShowReadOnlyMessage(refData.Palette.Role + " palette", PaletteReadOnlyLabel);
+                    return;
+                }
+                if (refData.Family != null)
+                {
+                    ShowReadOnlyMessage("Palette family", PaletteReadOnlyLabel);
+                    return;
+                }
+                if (refData.Layer != null)
+                {
+                    RenderLayerPane(refData.Layer, FindTreeNodeFor(refData));
+                    return;
+                }
+                if (refData.Node != null)
+                {
+                    RenderNodeFields(refData.Node, FindTreeNodeFor(refData));
+                    return;
+                }
                 ShowNoSelection();
-                return;
             }
-            if (refData.Palette != null)
+            catch (Exception ex)
             {
-                ShowReadOnlyMessage("Shared palette", PaletteReadOnlyLabel);
-                return;
+                // Selecting any node MUST NOT throw — surface a read-only error rather than tearing down.
+                ShowReadOnlyMessage("Field render failed", ex.Message);
             }
-            if (refData.Family != null)
-            {
-                ShowReadOnlyMessage("Palette family", PaletteReadOnlyLabel);
-                return;
-            }
-            if (refData.Layer != null)
-            {
-                ShowReadOnlyMessage("Layer: " + refData.Layer.Name, NameReadOnlyHint);
-                return;
-            }
-            if (refData.Node != null)
-            {
-                RenderNodeFields(refData.Node);
-                return;
-            }
-            ShowNoSelection();
         }
 
-        // Task 1 placeholder for a terrain node: a read-only list. Task 2 makes typed nodes editable.
-        private void RenderNodeFields(TerrainNode node)
+        // A LAYR selection: read-only name (deferred D-06) + the editable active-flag toggle. The toggle
+        // resolves the IHDR DATA leaf id via the Plan 01 ResolveIhdrLeafStableId bridge (RESEARCH OQ2) —
+        // never a hand-rolled tree walk.
+        private void RenderLayerPane(TerrainLayer layer, TreeNode treeNode)
         {
-            if (node.IsRawPreserved) { ShowReadOnlyMessage(node.Tag + " (raw-preserved)", RawFieldHint); return; }
-            if (node.IsDeadSkipped) { ShowReadOnlyMessage(node.Tag + " (obsolete)", ObsoleteTagHint); return; }
-            ShowReadOnlyMessage(node.Tag + " v" + node.Version, NoSelectionBody);
+            pnlFieldHost.SuspendLayout();
+            try
+            {
+                pnlFieldHost.Controls.Clear();
+
+                var rows = new FlowLayoutPanel
+                {
+                    Dock = DockStyle.Fill,
+                    FlowDirection = FlowDirection.TopDown,
+                    WrapContents = false,
+                    AutoScroll = true,
+                    BackColor = Colors.Primary(),
+                };
+
+                // Read-only name row (Phase 20 D-06 — names are not editable this phase).
+                rows.Controls.Add(MakeReadOnlyRow("name", string.IsNullOrEmpty(layer.Name) ? "(unnamed)" : layer.Name));
+                rows.Controls.Add(MakeHintLabel(NameReadOnlyHint));
+
+                // Active-flag toggle (the int32 at offset 0 of the IHDR DATA leaf — same leaf --field active
+                // mutates). Detach/reattach the CheckedChanged handler around the programmatic set so it does
+                // not re-fire (SnapshotPanel idiom).
+                var chkActive = new CheckBox
+                {
+                    Text = "active",
+                    ForeColor = Colors.Font(),
+                    BackColor = Colors.Primary(),
+                    AutoSize = true,
+                    Margin = new Padding(0, 6, 0, 0),
+                };
+                chkActive.CheckedChanged -= OnActiveFlagChanged;
+                chkActive.Checked = layer.Active;
+                chkActive.CheckedChanged += OnActiveFlagChanged;
+                chkActive.Tag = new ActiveToggleContext { Layer = layer, TreeNode = treeNode };
+                rows.Controls.Add(chkActive);
+
+                pnlFieldHost.Controls.Add(rows);  // Fill first
+                pnlFieldHost.Controls.Add(MakeHeadingLabel("Layer: " + (string.IsNullOrEmpty(layer.Name) ? "(unnamed)" : layer.Name)));
+            }
+            finally
+            {
+                pnlFieldHost.ResumeLayout(true);
+            }
+        }
+
+        private sealed class ActiveToggleContext
+        {
+            public TerrainLayer Layer;
+            public TreeNode TreeNode;
+        }
+
+        private void OnActiveFlagChanged(object sender, EventArgs e)
+        {
+            var chk = sender as CheckBox;
+            if (chk == null || document == null) return;
+            var ctx = chk.Tag as ActiveToggleContext;
+            if (ctx == null || ctx.Layer == null) return;
+            try
+            {
+                // RESEARCH OQ2: the layer exposes only its LAYR FORM StableIdPath — resolve the IHDR DATA
+                // leaf id via the Plan 01 bridge. NEVER walk the tree for the IHDR leaf by hand.
+                string ihdrLeafId = TerrainSaveTargets.ResolveIhdrLeafStableId(document.Mutable, ctx.Layer.StableIdPath);
+                StageEdit(new PendingEdit
+                {
+                    StableLeafId = ihdrLeafId,
+                    Tag = TgenFieldLayouts.LayerHeaderTag,       // "IHDR"
+                    Version = TgenFieldLayouts.LayerHeaderVersion, // synthetic "active" version
+                    FieldName = TgenFieldLayouts.ActiveFieldName,  // "active"
+                    Value = chk.Checked ? "1" : "0",
+                    DirtyTreeNode = ctx.TreeNode,
+                });
+                SetStatus("Active flag staged — Save or Preview to apply.", false);
+            }
+            catch (Exception ex)
+            {
+                SetStatus("Active-flag edit failed: " + ex.Message, true);
+            }
+        }
+
+        // A terrain node selection. Typed (IsEditable) → editable rows matching DisplayType; raw-preserved →
+        // read-only generic list + RawFieldHint; dead-skipped → ObsoleteTagHint. NEVER throws on un-typed.
+        private void RenderNodeFields(TerrainNode node, TreeNode treeNode)
+        {
+            pnlFieldHost.SuspendLayout();
+            try
+            {
+                pnlFieldHost.Controls.Clear();
+
+                if (node.IsRawPreserved)
+                {
+                    RenderHostMessage(node.Tag + " (raw-preserved)", RawFieldHint, Colors.FontDisabled());
+                    return;
+                }
+                if (node.IsDeadSkipped)
+                {
+                    RenderHostMessage(node.Tag + " (obsolete)", ObsoleteTagHint, Colors.FontDisabled());
+                    return;
+                }
+
+                var rows = new FlowLayoutPanel
+                {
+                    Dock = DockStyle.Fill,
+                    FlowDirection = FlowDirection.TopDown,
+                    WrapContents = false,
+                    AutoScroll = true,
+                    BackColor = Colors.Primary(),
+                };
+
+                foreach (var field in node.TypedFields)
+                {
+                    rows.Controls.Add(MakeFieldRow(node, field, treeNode));
+                }
+
+                pnlFieldHost.Controls.Add(rows);  // Fill first
+                pnlFieldHost.Controls.Add(MakeHeadingLabel(node.Tag + " v" + node.Version));
+            }
+            finally
+            {
+                pnlFieldHost.ResumeLayout(true);
+            }
+        }
+
+        // Builds one editable field row. ScalarFloat/Int32 → text box (invariant-culture parse on commit);
+        // Enum32/FamilyIdRef → text box of the decoded int value; ActiveFlag → checkbox. Non-editable fields
+        // render read-only.
+        private Control MakeFieldRow(TerrainNode node, TerrainField field, TreeNode treeNode)
+        {
+            var row = new FlowLayoutPanel
+            {
+                FlowDirection = FlowDirection.LeftToRight,
+                WrapContents = false,
+                AutoSize = true,
+                BackColor = Colors.Primary(),
+                Margin = new Padding(0, 2, 0, 2),
+            };
+            row.Controls.Add(new UtinniLabel
+            {
+                Text = field.Name,
+                ForeColor = Colors.Font(),
+                AutoSize = false,
+                Width = 130,
+                TextAlign = ContentAlignment.MiddleLeft,
+            });
+
+            if (!field.Editable)
+            {
+                row.Controls.Add(new UtinniLabel
+                {
+                    Text = field.Value ?? "",
+                    ForeColor = Colors.FontDisabled(),
+                    AutoSize = false,
+                    Width = 160,
+                    TextAlign = ContentAlignment.MiddleLeft,
+                });
+                return row;
+            }
+
+            if (field.DisplayType == TgenDisplayType.ActiveFlag)
+            {
+                var chk = new CheckBox
+                {
+                    ForeColor = Colors.Font(),
+                    BackColor = Colors.Primary(),
+                    AutoSize = true,
+                };
+                bool on;
+                bool.TryParse(field.Value, out on);
+                if (!on && field.Value != null && field.Value.Trim() != "0") on = field.Value.Trim() == "1";
+                chk.CheckedChanged -= OnTypedFieldCheckChanged;
+                chk.Checked = on;
+                chk.CheckedChanged += OnTypedFieldCheckChanged;
+                chk.Tag = new TypedFieldContext { Node = node, Field = field, TreeNode = treeNode };
+                row.Controls.Add(chk);
+                return row;
+            }
+
+            var txt = new TextBox
+            {
+                Text = field.Value ?? "",
+                BackColor = Colors.PrimaryHighlight(),
+                ForeColor = Colors.Font(),
+                BorderStyle = BorderStyle.FixedSingle,
+                Width = 160,
+            };
+            txt.Tag = new TypedFieldContext { Node = node, Field = field, TreeNode = treeNode };
+            txt.Leave += OnTypedFieldTextCommit;
+            row.Controls.Add(txt);
+            return row;
+        }
+
+        private sealed class TypedFieldContext
+        {
+            public TerrainNode Node;
+            public TerrainField Field;
+            public TreeNode TreeNode;
+        }
+
+        private void OnTypedFieldTextCommit(object sender, EventArgs e)
+        {
+            var txt = sender as TextBox;
+            if (txt == null) return;
+            var ctx = txt.Tag as TypedFieldContext;
+            if (ctx == null) return;
+            StageTypedFieldEdit(ctx.Node, ctx.Field, ctx.TreeNode, txt.Text);
+        }
+
+        private void OnTypedFieldCheckChanged(object sender, EventArgs e)
+        {
+            var chk = sender as CheckBox;
+            if (chk == null) return;
+            var ctx = chk.Tag as TypedFieldContext;
+            if (ctx == null) return;
+            StageTypedFieldEdit(ctx.Node, ctx.Field, ctx.TreeNode, chk.Checked ? "1" : "0");
+        }
+
+        // Stages a typed-field edit: resolves the node's DATA leaf id via the Plan 01 bridge (the model
+        // exposes only the node's FORM StableIdPath), then records the pending edit. The value is validated
+        // at Save/Preview time by the single-source TrnFieldEncoder (a bad value surfaces as red status,
+        // never a throw — Pitfall 5).
+        private void StageTypedFieldEdit(TerrainNode node, TerrainField field, TreeNode treeNode, string value)
+        {
+            if (document == null || node == null || field == null) return;
+            try
+            {
+                string leafId = TerrainSaveTargets.ResolveTypedDataLeafStableId(document.Mutable, node.StableIdPath);
+                StageEdit(new PendingEdit
+                {
+                    StableLeafId = leafId,
+                    Tag = node.Tag,
+                    Version = node.Version,
+                    FieldName = field.Name,
+                    Value = value,
+                    DirtyTreeNode = treeNode,
+                });
+                SetStatus("Edit staged — Save or Preview to apply.", false);
+            }
+            catch (Exception ex)
+            {
+                SetStatus("Edit failed: " + ex.Message, true);
+            }
+        }
+
+        // Records the pending edit, marks the leaf dirty (● glyph + Colors.Secondary() tint on its tree
+        // node), and enables Save. Only ONE pending edit is staged at a time (D-05 fixed-length, one field).
+        private void StageEdit(PendingEdit edit)
+        {
+            // Clear a prior dirty mark if it was on a different node.
+            if (pendingEdit != null && pendingEdit.DirtyTreeNode != null
+                && pendingEdit.DirtyTreeNode != edit.DirtyTreeNode)
+            {
+                ClearDirtyGlyph(pendingEdit.DirtyTreeNode, pendingEdit.DirtyBaseLabel);
+            }
+
+            if (edit.DirtyTreeNode != null)
+            {
+                edit.DirtyBaseLabel = StripDirtyGlyph(edit.DirtyTreeNode.Text);
+                edit.DirtyTreeNode.Text = "● " + edit.DirtyBaseLabel; // ● dirty glyph
+                edit.DirtyTreeNode.ForeColor = Colors.Secondary();          // accent tint (reserved use #2)
+            }
+
+            pendingEdit = edit;
+            hasPendingEdit = true;
+            RefreshActionButtonState();
+        }
+
+        private const string DirtyGlyph = "● ";
+
+        private static string StripDirtyGlyph(string label)
+        {
+            if (string.IsNullOrEmpty(label)) return label;
+            return label.StartsWith(DirtyGlyph, StringComparison.Ordinal) ? label.Substring(DirtyGlyph.Length) : label;
+        }
+
+        private void ClearDirtyGlyph(TreeNode node, string baseLabel)
+        {
+            if (node == null) return;
+            node.Text = baseLabel ?? StripDirtyGlyph(node.Text);
+            node.ForeColor = Colors.Font();
+        }
+
+        // Finds the currently-selected TreeNode (for dirty-glyph + active-toggle wiring).
+        private TreeNode FindTreeNodeFor(TreeNodeRef refData)
+        {
+            return treeLayers == null ? null : treeLayers.SelectedNode;
+        }
+
+        // ── Small row/label builders ──
+
+        private Control MakeReadOnlyRow(string name, string value)
+        {
+            var row = new FlowLayoutPanel
+            {
+                FlowDirection = FlowDirection.LeftToRight,
+                WrapContents = false,
+                AutoSize = true,
+                BackColor = Colors.Primary(),
+                Margin = new Padding(0, 2, 0, 2),
+            };
+            row.Controls.Add(new UtinniLabel { Text = name, ForeColor = Colors.Font(), AutoSize = false, Width = 130 });
+            row.Controls.Add(new UtinniLabel { Text = value ?? "", ForeColor = Colors.FontDisabled(), AutoSize = false, Width = 160 });
+            return row;
+        }
+
+        private UtinniLabel MakeHeadingLabel(string text)
+        {
+            return new UtinniLabel
+            {
+                Dock = DockStyle.Top,
+                AutoSize = false,
+                Height = 18,
+                ForeColor = Colors.Font(),
+                Text = text,
+            };
+        }
+
+        private UtinniLabel MakeHintLabel(string text)
+        {
+            return new UtinniLabel
+            {
+                AutoSize = false,
+                Width = 300,
+                Height = 18,
+                ForeColor = Colors.FontDisabled(),
+                Text = text,
+                Margin = new Padding(0, 0, 0, 4),
+            };
         }
 
         // ── Field-pane state renderers ──
@@ -654,29 +999,218 @@ namespace TJT.UI.Forms
         }
 
         // ─────────────────────────────────────────────────────────────────────
-        // Save / Preview — wired in Task 2. Task 1 ships the guards so the buttons are inert-but-honest
-        // until the edit/save/preview path lands.
+        // Save / Save-As-Override / Preview. Save routes through the Plan 01 in-proc
+        // TerrainSaveTargets.SaveLooseOverride (byte-parity-proven vs apply-save-trn). Preview applies the
+        // edit in-memory to a temp loose override inside containment, then Dispatches (Discretion Option A).
+        // Both fire EXACTLY ONE AddMainLoopCall via ClientReloadDispatcher.Dispatch (D-06); no direct
+        // bindings, no per-frame work, no inline tier copy.
         // ─────────────────────────────────────────────────────────────────────
 
-        private void OnSaveClicked(object sender, EventArgs e)
+        private async void OnSaveClicked(object sender, EventArgs e)
         {
             if (document == null) { SetStatus("No terrain loaded.", true); return; }
-            SetStatus("Edit a field, then Save.", false);
+            if (pendingEdit == null) { SetStatus("Nothing to save — edit a field first.", true); return; }
+
+            string resolvedRoot = ResolveClientRoot();
+            if (string.IsNullOrEmpty(resolvedRoot))
+            {
+                SetStatus("Save failed: could not resolve the client root for the loose override.", true);
+                return;
+            }
+
+            // Save-As-Override over an existing override → confirm (the only overwrite case).
+            if (source is OpenSource.TreArchive)
+            {
+                string predicted = PredictOverridePath(resolvedRoot);
+                if (!string.IsNullOrEmpty(predicted) && File.Exists(predicted) && !ConfirmOverwriteOverride(predicted))
+                {
+                    SetStatus("Save cancelled.", false);
+                    return;
+                }
+            }
+
+            btnSave.Enabled = false;
+            try
+            {
+                TerrainSaveTargets.SaveResult result = await TerrainSaveTargets.SaveLooseOverride(
+                    document, source, resolvedRoot,
+                    pendingEdit.StableLeafId, pendingEdit.Tag, pendingEdit.Version,
+                    pendingEdit.FieldName, pendingEdit.Value);
+
+                if (result == null || !result.Ok)
+                {
+                    string reason = result == null ? "unknown error" : result.Message;
+                    SetStatus("Save failed: " + reason, true);
+                    return;
+                }
+
+                lastSavedPath = result.Path;
+                hasPendingEdit = false;
+                // The save committed the in-memory edit — a fresh document from the saved bytes now matches
+                // the source, so the loose source becomes the new in-place target.
+                source = new OpenSource.LooseFile(result.Path);
+                RefreshSaveButtonLabel();
+                ClearDirtyOnSavedNode();
+                SetStatus("Saved → " + result.Path, false);
+
+                // Route the save through the existing reload tier (D-04 auto-on-save) — honest candor.
+                ReloadTier tier = ClientReloadDispatcher.Dispatch(result.Path, null); // null rootTypeId for .trn
+                ApplyReloadCandor(tier);
+
+                // D-09 undo seam — null-safe (NULL until FormMain wires it).
+                if (editorPlugin != null) editorPlugin.ClearUndoStack?.Invoke();
+            }
+            catch (Exception ex)
+            {
+                SetStatus("Save failed: " + ex.Message, true);
+            }
+            finally
+            {
+                RefreshActionButtonState();
+            }
         }
 
         private void OnPreviewClicked(object sender, EventArgs e)
         {
             if (document == null) { SetStatus("No terrain loaded.", true); return; }
-            if (!hasPendingEdit) { SetStatus(NothingToPreviewGuard, true); return; }
-            if (string.IsNullOrEmpty(lastSavedPath)) { SetStatus(SaveFirstPreviewGuard, true); return; }
+            if (pendingEdit == null && !hasPendingEdit) { SetStatus(NothingToPreviewGuard, true); return; }
+
+            string resolvedRoot = ResolveClientRoot();
+            if (string.IsNullOrEmpty(resolvedRoot))
+            {
+                SetStatus("Preview failed: could not resolve the client root.", true);
+                return;
+            }
+
+            string previewPath = lastSavedPath;
+            // Manual Preview (Discretion Option A): if the edit isn't on disk yet, apply it in-memory and
+            // write a temp loose override INSIDE the containment root, then Dispatch — no commit to the real
+            // override. If the edit was already saved, Preview just re-dispatches the last-saved path.
+            if (hasPendingEdit && pendingEdit != null)
+            {
+                try
+                {
+                    TerrainSaveTargets.SaveResult applied = TerrainSaveTargets.ApplyFieldEdit(
+                        document, pendingEdit.StableLeafId, pendingEdit.Tag, pendingEdit.Version,
+                        pendingEdit.FieldName, pendingEdit.Value);
+                    if (applied != null && !applied.Ok)
+                    {
+                        SetStatus("Preview failed: " + applied.Message, true);
+                        return;
+                    }
+                    byte[] bytes = document.Serialize();
+                    previewPath = WritePreviewTemp(resolvedRoot, bytes);
+                }
+                catch (Exception ex)
+                {
+                    SetStatus("Preview failed: " + ex.Message, true);
+                    return;
+                }
+            }
+
+            if (string.IsNullOrEmpty(previewPath))
+            {
+                SetStatus(SaveFirstPreviewGuard, true);
+                return;
+            }
+
+            // EXACTLY ONE AddMainLoopCall per Preview, through the existing dispatcher (D-05/D-06).
+            ReloadTier tier = ClientReloadDispatcher.Dispatch(previewPath, null);
+            ApplyReloadCandor(tier);
+        }
+
+        // Writes the pending-edit bytes to a temp loose override (".trn.preview") INSIDE the containment
+        // root so Preview never commits to the real override path. Keeps the extension .trn-classifiable.
+        private string WritePreviewTemp(string resolvedRoot, byte[] bytes)
+        {
+            string dir = Path.Combine(resolvedRoot, "loose_preview");
+            Directory.CreateDirectory(dir);
+            string path = Path.Combine(dir, "terrain_preview.trn");
+            using (var fs = new FileStream(path, FileMode.Create, FileAccess.Write, FileShare.Read))
+            {
+                fs.Write(bytes, 0, bytes.Length);
+                fs.Flush(true);
+            }
+            return path;
         }
 
         // Reflects a reload tier on the status footer via the Plan 01 candor helper (the ONLY copy source —
-        // never an inline tier string). Task 2 calls this after a Dispatch.
+        // never an inline tier string; D-07 honest default holds inside the helper).
         private void ApplyReloadCandor(ReloadTier tier)
         {
             TerrainReloadCandor.StatusCopyResult copy = TerrainReloadCandor.StatusCopy(tier);
             SetStatus(copy.Text, copy.IsError);
+        }
+
+        private void ClearDirtyOnSavedNode()
+        {
+            if (pendingEdit != null && pendingEdit.DirtyTreeNode != null)
+            {
+                ClearDirtyGlyph(pendingEdit.DirtyTreeNode, pendingEdit.DirtyBaseLabel);
+            }
+        }
+
+        // ── Override-exists confirm (the only overwrite case — 21-UI-SPEC Destructive table). ──
+
+        private bool ConfirmOverwriteOverride(string path)
+        {
+            DialogResult dr = MessageBox.Show(
+                this,
+                "A loose override already exists at " + path +
+                ". Overwrite it? The original TRE asset is never modified.",
+                "Override exists",
+                MessageBoxButtons.OKCancel,
+                MessageBoxIcon.Warning);
+            return dr == DialogResult.OK;
+        }
+
+        // Predicts the loose-override destination for the current TRE source so the overwrite confirm can
+        // check File.Exists. Mirrors the SaveLooseOverride relative-path derivation (TRE → LogicalPath).
+        private string PredictOverridePath(string resolvedRoot)
+        {
+            var tre = source as OpenSource.TreArchive;
+            if (tre == null || string.IsNullOrEmpty(tre.LogicalPath)) return null;
+            try
+            {
+                return LooseOverridePath.Resolve(resolvedRoot, tre.LogicalPath);
+            }
+            catch
+            {
+                return null; // containment rejection is surfaced by SaveLooseOverride itself.
+            }
+        }
+
+        // Resolves the client install root (process module → GetWorkingDirectory → ini fallback) — the same
+        // order FormIffEditor/FormTreBrowser use. Returns null when none resolves.
+        private string ResolveClientRoot()
+        {
+            try
+            {
+                string exe = System.Diagnostics.Process.GetCurrentProcess().MainModule.FileName;
+                string moduleDir = Path.GetDirectoryName(exe);
+                if (!string.IsNullOrEmpty(moduleDir) && Directory.Exists(moduleDir)) return moduleDir;
+            }
+            catch { /* fall through */ }
+            try
+            {
+                string wd = UtinniCore.Utility.utility.GetWorkingDirectory();
+                if (!string.IsNullOrEmpty(wd) && Directory.Exists(wd)) return wd;
+            }
+            catch { /* binding unavailable outside a live client */ }
+            try
+            {
+                if (editorPlugin != null)
+                {
+                    var ini = editorPlugin.GetConfig();
+                    if (ini != null)
+                    {
+                        string configured = ini.GetString("TreBrowser", "clientDir");
+                        if (!string.IsNullOrEmpty(configured) && Directory.Exists(configured)) return configured;
+                    }
+                }
+            }
+            catch { /* ini may not have the key yet */ }
+            return null;
         }
     }
 }

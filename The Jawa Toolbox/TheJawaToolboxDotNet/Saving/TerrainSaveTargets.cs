@@ -161,6 +161,58 @@ namespace TJT.Saving
                 "layerFormStableId");
         }
 
+        /// <summary>
+        /// Resolves the editable <c>DATA</c> leaf's stable id for the typed terrain node addressed by
+        /// <paramref name="nodeFormStableId"/> — the <see cref="TerrainNode.StableIdPath"/> exposed by the
+        /// decoded model is the node's <c>FORM&lt;tag&gt;</c> path, NOT the leaf id <c>apply-save-trn</c>
+        /// mutates. A typed node is <c>FORM&lt;tag&gt; -&gt; FORM&lt;version&gt; -&gt; DATA</c> (see
+        /// <c>TgenDecoder.DecodeNode</c>): this walks the node FORM's child version FORM(s) for the first
+        /// <c>DATA</c> leaf and returns its stable id (re-derived via
+        /// <see cref="MutableIffDocument.DeriveStableId"/> with the same parentPrefix/ordinal shape the
+        /// decoder uses). NET-NEW public bridge — the consuming editor (Plan 02) must NOT hand-roll this
+        /// walk, and the CLI's private leaf walk is NOT reused.
+        /// </summary>
+        /// <param name="doc">The decoded terrain document's mutable DOM (<see cref="TerrainDocument.Mutable"/>).</param>
+        /// <param name="nodeFormStableId">The selected typed node's <see cref="TerrainNode.StableIdPath"/> (FORM&lt;tag&gt; path).</param>
+        /// <returns>The stable id of the node's editable DATA leaf.</returns>
+        /// <exception cref="ArgumentNullException">A required argument was null.</exception>
+        /// <exception cref="ArgumentException">No node FORM matched, or it has no DATA leaf under a version FORM.</exception>
+        public static string ResolveTypedDataLeafStableId(MutableIffDocument doc, string nodeFormStableId)
+        {
+            if (doc == null) throw new ArgumentNullException("doc");
+            if (string.IsNullOrEmpty(nodeFormStableId)) throw new ArgumentNullException("nodeFormStableId");
+
+            MutableIffNode nodeForm = FindNodeByStableId(doc, nodeFormStableId);
+            if (nodeForm == null || nodeForm.Kind != MutableIffNodeKind.Container)
+            {
+                throw new ArgumentException(
+                    "No typed node FORM container found for stable id '" + nodeFormStableId + "'.", "nodeFormStableId");
+            }
+
+            // FORM<tag> -> FORM<version> -> DATA. Walk the version FORM children for the first DATA leaf.
+            string nodePrefix = nodeFormStableId + "/";
+            for (int i = 0; i < nodeForm.Children.Count; i++)
+            {
+                MutableIffNode versionForm = nodeForm.Children[i];
+                string versionId = MutableIffDocument.DeriveStableId(versionForm, nodePrefix, i);
+                if (versionForm.Kind != MutableIffNodeKind.Container) continue;
+                string versionPrefix = versionId + "/";
+                for (int j = 0; j < versionForm.Children.Count; j++)
+                {
+                    MutableIffNode g = versionForm.Children[j];
+                    if (g.Kind == MutableIffNodeKind.Leaf
+                        && string.Equals(g.TypeId, DataLeafTypeId, StringComparison.Ordinal))
+                    {
+                        return MutableIffDocument.DeriveStableId(g, versionPrefix, j);
+                    }
+                }
+            }
+
+            throw new ArgumentException(
+                "Typed node FORM '" + nodeFormStableId + "' has no DATA leaf under a version FORM.",
+                "nodeFormStableId");
+        }
+
         // ─────────────────────────────────────────────────────────────────────
         // In-proc edit -> save under the loose-override matrix (D-08) with fail-closed --root containment.
         // ─────────────────────────────────────────────────────────────────────

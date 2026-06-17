@@ -1047,7 +1047,7 @@ namespace TJT.UI.Forms
                 TerrainSaveTargets.SaveResult result = await TerrainSaveTargets.SaveLooseOverride(
                     document, source, resolvedRoot,
                     pendingEdit.StableLeafId, pendingEdit.Tag, pendingEdit.Version,
-                    pendingEdit.FieldName, pendingEdit.Value);
+                    pendingEdit.FieldName, pendingEdit.Value, ResolveLooseOverrideSubDir());
 
                 if (result == null || !result.Ok)
                 {
@@ -1177,19 +1177,47 @@ namespace TJT.UI.Forms
         }
 
         // Predicts the loose-override destination for the current TRE source so the overwrite confirm can
-        // check File.Exists. Mirrors the SaveLooseOverride relative-path derivation (TRE → LogicalPath).
+        // check File.Exists. Mirrors the SaveLooseOverride relative-path derivation (TRE → LogicalPath) AND
+        // its two-step <root>/<looseOverrideSubDir>/<logical> composition (R2 / 21-06) so the overwrite
+        // prediction points at the SAME destination the save writes.
         private string PredictOverridePath(string resolvedRoot)
         {
             var tre = source as OpenSource.TreArchive;
             if (tre == null || string.IsNullOrEmpty(tre.LogicalPath)) return null;
             try
             {
-                return LooseOverridePath.Resolve(resolvedRoot, tre.LogicalPath);
+                string subDir = ResolveLooseOverrideSubDir();
+                string overrideBase = string.IsNullOrEmpty(subDir)
+                    ? resolvedRoot
+                    : LooseOverridePath.Resolve(resolvedRoot, subDir);
+                return LooseOverridePath.Resolve(overrideBase, tre.LogicalPath);
             }
             catch
             {
                 return null; // containment rejection is surfaced by SaveLooseOverride itself.
             }
+        }
+
+        // Resolves the loose-override sub-directory for terrain overrides (R2 / 21-06). Mirrors
+        // FormIffEditor's [IffEditor] looseOverrideDir resolution from its own [TerrainEditor] section,
+        // falling back to the literal "loose" (IffSaveTargets' default — the documented searchPath) so the
+        // two editors agree on the destination convention.
+        private string ResolveLooseOverrideSubDir()
+        {
+            try
+            {
+                if (editorPlugin != null)
+                {
+                    var ini = editorPlugin.GetConfig();
+                    if (ini != null)
+                    {
+                        string configured = ini.GetString("TerrainEditor", "looseOverrideDir");
+                        if (!string.IsNullOrEmpty(configured)) return configured;
+                    }
+                }
+            }
+            catch { /* ini may not have the key yet — fall through to the default */ }
+            return "loose";
         }
 
         // Resolves the client install root (process module → GetWorkingDirectory → ini fallback) — the same

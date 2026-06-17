@@ -260,8 +260,12 @@ namespace TJT.Saving
         /// <summary>
         /// Applies ONE fixed-length field edit (scalar / enum / familyId / active) to the leaf addressed by
         /// <paramref name="stableLeafId"/> in <paramref name="terrain"/>'s mutable DOM, then writes the
-        /// re-emitted bytes as a loose override under <paramref name="resolvedRoot"/> at the logical path
-        /// derived from <paramref name="source"/>. Mirrors <c>apply-save-trn</c> in-proc: it gates on
+        /// re-emitted bytes as a loose override under
+        /// <c><paramref name="resolvedRoot"/>/<paramref name="looseOverrideSubDir"/>/&lt;logical-path-from-source&gt;</c>
+        /// (R2 / 21-06 — the documented loose searchPath every other editor targets, mirroring
+        /// <see cref="IffSaveTargets.SaveLooseOverride"/>). An empty/null
+        /// <paramref name="looseOverrideSubDir"/> preserves the legacy <c><paramref name="resolvedRoot"/>/&lt;logical&gt;</c>
+        /// destination. Mirrors <c>apply-save-trn</c> in-proc: it gates on
         /// <see cref="TerrainNode.IsEditable"/> for a typed edit (raw / dead / truncated nodes are rejected
         /// BEFORE encoding), routes the encode through the single-source <see cref="TrnFieldEncoder"/> (the
         /// <c>--field active</c> path uses the IHDR descriptor exactly as the CLI does), and resolves the
@@ -276,6 +280,11 @@ namespace TJT.Saving
         /// <param name="version">The enclosing version FORM (or "active" for the active edit).</param>
         /// <param name="fieldName">The descriptor field name to edit ("active" for the IHDR layer flag).</param>
         /// <param name="value">The new value (invariant-culture per the field's parser).</param>
+        /// <param name="looseOverrideSubDir">
+        /// The loose-override sub-directory composed under <paramref name="resolvedRoot"/> (e.g. "loose" — the
+        /// documented searchPath the client toggles). Empty/null preserves the legacy &lt;root&gt;/&lt;logical&gt;
+        /// destination. Appended last to keep the existing positional call sites readable (21-06 R2).
+        /// </param>
         public static async Task<SaveResult> SaveLooseOverride(
             TerrainDocument terrain,
             OpenSource source,
@@ -284,7 +293,8 @@ namespace TJT.Saving
             string tag,
             string version,
             string fieldName,
-            string value)
+            string value,
+            string looseOverrideSubDir)
         {
             if (terrain == null) throw new ArgumentNullException("terrain");
             if (source == null) throw new ArgumentNullException("source");
@@ -328,15 +338,32 @@ namespace TJT.Saving
                 return editResult;
             }
 
-            // Resolve the destination through the fail-closed --root containment (same gate as apply-save-trn).
-            string fullPath;
+            // Compose the override base = resolvedRoot/looseOverrideSubDir (R2 / 21-06 — same two-step shape
+            // IffSaveTargets.SaveLooseOverride uses so terrain overrides land on the documented loose
+            // searchPath like every other editor). Each leg goes through the fail-closed LooseOverridePath
+            // defenses one section at a time. An empty subdir preserves the legacy <root>/<logical> destination.
+            string overrideBase;
             try
             {
-                fullPath = LooseOverridePath.Resolve(resolvedRoot, relAssetPath);
+                overrideBase = string.IsNullOrEmpty(looseOverrideSubDir)
+                    ? resolvedRoot
+                    : LooseOverridePath.Resolve(resolvedRoot, looseOverrideSubDir);
             }
             catch (ArgumentException ex)
             {
-                return SaveResult.Failure("Save failed: " + ex.Message);
+                return SaveResult.Failure("Invalid loose-override sub-directory: " + ex.Message);
+            }
+
+            // Place the asset under the override base through the same fail-closed --root containment
+            // (the gate apply-save-trn applies; content parity is unchanged — only the destination relocates).
+            string fullPath;
+            try
+            {
+                fullPath = LooseOverridePath.Resolve(overrideBase, relAssetPath);
+            }
+            catch (ArgumentException ex)
+            {
+                return SaveResult.Failure("Invalid loose-override asset path: " + ex.Message);
             }
 
             byte[] bytes = terrain.Serialize();

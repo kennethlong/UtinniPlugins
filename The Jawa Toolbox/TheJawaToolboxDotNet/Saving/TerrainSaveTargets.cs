@@ -151,7 +151,12 @@ namespace TJT.Saving
             }
 
             // Walk walkRoot's children for the IHDR container, then its DATA leaf, re-deriving the leaf's
-            // stable id with the SAME prefix shape DeriveStableId produces.
+            // stable id with the SAME prefix shape DeriveStableId produces. On real high-era terrain
+            // (naboo.trn, PTAT/0014) the IHDR DATA leaf is ONE version-form deeper —
+            // IHDR -> <IHDR-version FORM> -> DATA (21-05 R1). This mirrors the EXACT descent
+            // TgenDecoder.ReadLayerItemHeader uses: prefer a DIRECT IHDR DATA child (collapsed / current
+            // direct-DATA fixtures); else descend one level via FirstContainerChild(ihdr) to the IHDR version
+            // FORM and resolve its DATA leaf — so read and write address the SAME leaf (concern #10).
             for (int i = 0; i < walkRoot.Children.Count; i++)
             {
                 MutableIffNode child = walkRoot.Children[i];
@@ -159,6 +164,7 @@ namespace TJT.Saving
                 if (child.Kind == MutableIffNodeKind.Container
                     && string.Equals(child.SubTypeId, LayerItemHeaderForm, StringComparison.Ordinal))
                 {
+                    // (a) Direct-DATA child of IHDR (fallback shape — collapsed / WithRealLayrWrapper).
                     string ihdrPrefix = childId + "/";
                     for (int j = 0; j < child.Children.Count; j++)
                     {
@@ -168,6 +174,23 @@ namespace TJT.Saving
                         {
                             // Parent FORM is IHDR (asserted by the enclosing branch) — return the leaf stable id.
                             return MutableIffDocument.DeriveStableId(grandChild, ihdrPrefix, j);
+                        }
+                    }
+
+                    // (b) No direct DATA — descend one level to the IHDR version FORM (real deeper shape).
+                    MutableIffNode versionForm = FirstContainerChild(child);
+                    if (versionForm != null)
+                    {
+                        string versionId = MutableIffDocument.DeriveStableId(versionForm, ihdrPrefix, IndexOf(child, versionForm));
+                        string versionPrefix = versionId + "/";
+                        for (int k = 0; k < versionForm.Children.Count; k++)
+                        {
+                            MutableIffNode g = versionForm.Children[k];
+                            if (g.Kind == MutableIffNodeKind.Leaf
+                                && string.Equals(g.TypeId, DataLeafTypeId, StringComparison.Ordinal))
+                            {
+                                return MutableIffDocument.DeriveStableId(g, versionPrefix, k);
+                            }
                         }
                     }
                 }

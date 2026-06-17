@@ -130,6 +130,19 @@ namespace TJT
                 Log.Info("Failed to create FormParticleEditor; Particle Editor will be unavailable: " + ex);
             }
 
+            // 22-04: register the ClientEffect Editor (Wave-2, PROD-W2-CFX-01) in the same try/catch
+            // isolation block. GetSubPanels() stays null — the MEF SPI is NOT widened (CON-M-01/02). The
+            // TRE Browser "Open in Effects Editor" hand-off finds this form by type; the docked
+            // EffectsSubPanel (added to the SubPanelContainer array below) also launches it.
+            try
+            {
+                forms.Add(new FormClientEffectEditor(this));
+            }
+            catch (Exception ex)
+            {
+                Log.Info("Failed to create FormClientEffectEditor; ClientEffect Editor will be unavailable: " + ex);
+            }
+
             // 21-03: the docked Terrain entry SubPanel (D-01, PROD-W2-TRN-05) joins the existing
             // SubPanelContainer("Controls", …) array — the established docked-SubPanel surface. GetSubPanels()
             // STAYS null below: the MEF SPI is NOT widened (CON-M-01/02, STAB-04), matching every shipped
@@ -141,6 +154,7 @@ namespace TJT
                 new ScenePanel(this, hotkeyManager, ini),
                 new SnapshotPanel(this, hotkeyManager, ini),
                 new TerrainSubPanel(this, hotkeyManager, ini),
+                new EffectsSubPanel(this, hotkeyManager, ini),
                 new PlayerPanel(hotkeyManager),
                 new FreeCamPanel(hotkeyManager),
                 new GraphicsPanel(ini),

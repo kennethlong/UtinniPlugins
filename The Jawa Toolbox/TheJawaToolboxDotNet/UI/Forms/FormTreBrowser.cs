@@ -373,10 +373,14 @@ namespace TJT.UI.Forms
 
         // Locate the docked TerrainSubPanel the plugin registered in the GetStandalonePanels() "Controls"
         // container (the docked SubPanel owns the singleton FormTerrainEditor host — D-02). The container is
-        // a FlowLayoutPanel whose children are CollapsiblePanels each wrapping a SubPanel, so we walk the
-        // control tree (the wrapped SubPanel is private on CollapsiblePanel). Returns null if the SubPanel
-        // failed to load (its ctor sits inside a try/catch — a throwing ctor surfaces a state label; a hard
-        // MEF drop would leave it absent).
+        // a FlowLayoutPanel whose children are CollapsiblePanels each wrapping a SubPanel. A CollapsiblePanel
+        // realizes its wrapped SubPanel into Controls only when EXPANDED, so on a fresh session (Terrain
+        // section collapsed by default) a plain Controls walk would miss it — the 21-04 smoke worked around
+        // that by expanding the section first (R3). We now consult CollapsiblePanel.WrappedSubPanel, which
+        // returns the SubPanel held since construction regardless of expand state, and keep the direct-cast /
+        // recursive-Controls walk as a fallback for expanded sections or non-CollapsiblePanel hosts. Returns
+        // null if the SubPanel failed to load (its ctor sits inside a try/catch — a throwing ctor surfaces a
+        // state label; a hard MEF drop would leave it absent).
         private TJT.UI.SubPanels.TerrainSubPanel FindTerrainSubPanel()
         {
             foreach (SubPanelContainer container in editorPlugin.GetStandalonePanels())
@@ -393,6 +397,16 @@ namespace TJT.UI.Forms
             if (parent == null) return null;
             foreach (Control c in parent.Controls)
             {
+                // Expand-state-independent path: a CollapsiblePanel holds its wrapped SubPanel from
+                // construction even while collapsed (when it is absent from c.Controls) — consult it first.
+                CollapsiblePanel collapsible = c as CollapsiblePanel;
+                if (collapsible != null)
+                {
+                    TJT.UI.SubPanels.TerrainSubPanel wrapped = collapsible.WrappedSubPanel as TJT.UI.SubPanels.TerrainSubPanel;
+                    if (wrapped != null) return wrapped;
+                }
+
+                // Fallback: direct cast + recursive Controls walk (expanded sections, non-CollapsiblePanel hosts).
                 TJT.UI.SubPanels.TerrainSubPanel panel = c as TJT.UI.SubPanels.TerrainSubPanel;
                 if (panel != null) return panel;
                 TJT.UI.SubPanels.TerrainSubPanel nested = FindTerrainSubPanelIn(c);

@@ -137,6 +137,12 @@
     <Compile Include="UI\Forms\FormTerrainEditor.Designer.cs">
       <DependentUpon>FormTerrainEditor.cs</DependentUpon>
     </Compile>
+    <Compile Include="UI\Forms\FormClientEffectEditor.cs">
+      <SubType>Form</SubType>
+    </Compile>
+    <Compile Include="UI\Forms\FormClientEffectEditor.Designer.cs">
+      <DependentUpon>FormClientEffectEditor.cs</DependentUpon>
+    </Compile>
     <Compile Include="UI\ParticleReadAssist.cs" />
     <Compile Include="Saving\ParticleSaveTargets.cs" />
     <Compile Include="UI\Forms\FormStfCsvImportPreviewDialog.cs">
@@ -252,11 +258,18 @@
     <Compile Include="UI\SubPanels\TerrainSubPanel.Designer.cs">
       <DependentUpon>TerrainSubPanel.cs</DependentUpon>
     </Compile>
+    <Compile Include="UI\SubPanels\EffectsSubPanel.cs">
+      <SubType>UserControl</SubType>
+    </Compile>
+    <Compile Include="UI\SubPanels\EffectsSubPanel.Designer.cs">
+      <DependentUpon>EffectsSubPanel.cs</DependentUpon>
+    </Compile>
     <Compile Include="Saving\ClientReloadDispatcher.cs" />
     <Compile Include="Saving\DatatableCsvSerializer.cs" />
     <Compile Include="Saving\DatatableSaveTargets.cs" />
     <Compile Include="Saving\IffSaveTargets.cs" />
     <Compile Include="Saving\TerrainSaveTargets.cs" />
+    <Compile Include="Saving\ClientEffectSaveTargets.cs" />
     <Compile Include="Saving\LivePatchSaveTarget.cs" />
     <Compile Include="Saving\TreRepackSaveTarget.cs" />
     <Compile Include="SWG\CuiImpl.cs" />

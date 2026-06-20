@@ -223,14 +223,16 @@ namespace TJT.UI.Forms
                 Orientation = Orientation.Vertical,   // command list left | field grid right
                 BackColor = Colors.PrimaryHighlight(),
                 SplitterWidth = 4,
-                Panel1MinSize = 120,
-                Panel2MinSize = 160,
                 FixedPanel = FixedPanel.Panel1,
             };
-            // LOCKED (Pitfall 8): Size BEFORE SplitterDistance or the ctor throws and MEF silently drops the
-            // whole plugin. Definite sizes here keep SplitterDistance valid at construction.
-            splitMain.Size = new Size(980, 540);
-            splitMain.SplitterDistance = GetIniInt("splitterDistance", 320);
+            // SplitterDistance + the Panel1/Panel2 min-sizes are applied in OnShown (ApplySplitterLayout),
+            // NOT here. A Dock.Fill SplitContainer IGNORES an explicit Size while it is unparented, so its
+            // width stays at the ~150px default — at which point ANY SplitterDistance (or a Panel1MinSize
+            // wider than that default) is out of range and the setter THROWS, dropping BuildContentSafe to
+            // its red failure state. Deferring to first-show, when the form has a real client width, keeps
+            // the value valid and lets us clamp a stale persisted value into range. (Replaces the prior —
+            // incorrect — "Size BEFORE SplitterDistance keeps it valid at construction" idiom, which the
+            // 22-04 layout-smoke harness proved throws every time.)
 
             listCommands = new ListView
             {
@@ -373,6 +375,45 @@ namespace TJT.UI.Forms
 
             ResumeLayout(false);
             PerformLayout();
+        }
+
+        // Applied-once flag for the deferred splitter layout (OnShown can fire again on a singleton re-show;
+        // we keep the user's dragged splitter position by only applying the default+clamp the first time).
+        private bool splitterLayoutApplied;
+
+        // SplitterDistance and the Panel min-sizes need a REAL (parented, shown) width to validate against —
+        // a Dock.Fill SplitContainer only has its ~150px default until the form is shown, and setting them at
+        // construction throws (see BuildContent). First-show is the earliest point the form has its true
+        // client width, so we apply them here, clamping any stale persisted value into the valid range. Order
+        // matters: SplitterDistance is set FIRST (while min-sizes are still the 25px default, so a wide value
+        // is in range), THEN the min-sizes are tightened (the now-current distance already satisfies them).
+        protected override void OnShown(EventArgs e)
+        {
+            base.OnShown(e);
+            ApplySplitterLayout();
+        }
+
+        private void ApplySplitterLayout()
+        {
+            if (!layoutReady || splitMain == null || splitterLayoutApplied) return;
+            try
+            {
+                const int panel1Min = 120;   // command-list (left) lower bound
+                const int panel2Min = 160;   // field-grid (right) lower bound
+                int width = splitMain.Width;
+                int reserveRight = panel2Min + splitMain.SplitterWidth;
+                if (width - reserveRight < panel1Min) return; // too narrow to place a constrained splitter
+                int desired = GetIniInt("splitterDistance", 320);
+                int clamped = Math.Max(panel1Min, Math.Min(desired, width - reserveRight));
+                splitMain.SplitterDistance = clamped;         // valid now: min-sizes are still the 25px default
+                splitMain.Panel1MinSize = panel1Min;          // distance >= panel1Min already holds
+                splitMain.Panel2MinSize = panel2Min;          // width - distance - splitter >= panel2Min already holds
+                splitterLayoutApplied = true;
+            }
+            catch
+            {
+                // Splitter placement must never break an already-built editor.
+            }
         }
 
         private UtinniButton MakeButton(string text, ref int x, int width)

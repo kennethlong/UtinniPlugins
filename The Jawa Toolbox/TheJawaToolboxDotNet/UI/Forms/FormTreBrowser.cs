@@ -263,11 +263,11 @@ namespace TJT.UI.Forms
             _miOpenInTerrainEditor.ToolTipText = "Opens this terrain in the Terrain Editor (read-only — first save writes a loose override).";
 
             // 22-04: HIDE the Effects-Editor item unless the entry is a resolvable .cef (the ClientEffect
-            // carrier). The payload is NOT resolved at menu-Opening time (TrePayloadResolver resolves lazily
-            // on click), so the gate is extension-only here; the FORM CLEF structure is verified — and
-            // degrades to raw/hex, never hard-fails — inside FormClientEffectEditor.OpenFromTreEntry on click.
-            _miOpenInEffectsEditor.Visible = !d.EnumerateOnly &&
-                string.Equals(Path.GetExtension(pn.FullPath), ".cef", StringComparison.OrdinalIgnoreCase);
+            // carrier). Gated by EffectHandoffPolicy (the framework-leg testable seam mirroring
+            // ParticleHandoffPolicy) — the payload is NOT resolved at menu-Opening time, so the gate is
+            // extension-only here; the FORM CLEF structure is verified — and degrades to raw/hex, never
+            // hard-fails — inside FormClientEffectEditor.OpenFromTreEntry on click.
+            _miOpenInEffectsEditor.Visible = EffectHandoffPolicy.ShouldOfferEffectsEditor(pn.FullPath, d.EnumerateOnly);
             _miOpenInEffectsEditor.ToolTipText = "Opens this client effect in the Effects Editor (read-only — first save writes a loose override).";
         }
 

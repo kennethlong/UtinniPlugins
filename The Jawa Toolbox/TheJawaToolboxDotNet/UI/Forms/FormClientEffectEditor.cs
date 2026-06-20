@@ -1103,13 +1103,20 @@ namespace TJT.UI.Forms
         {
             CommandRowRef row = SelectedRow();
             if (effect == null || effect.IsRawPreserved || row == null) return;
+            int currentIndex = listCommands.SelectedIndices.Count > 0 ? listCommands.SelectedIndices[0] : -1;
             try
             {
                 PushUndoSnapshot();
                 if (up) effect.ReorderCommandUp(row.Leaf); else effect.ReorderCommandDown(row.Leaf);
                 MarkDirty();
-                // The reordered leaf keeps its object identity; re-derive ids and reselect by leaf.
-                RefreshAfterMutation(reselectLeaf: row.Leaf);
+                // Reselect the moved command at its NEW position so the row stays highlighted and visibly
+                // jumps up/down (the reparse drops leaf identity, so we address it by index — exactly where
+                // the move placed it). A boundary move is a no-op in the codec; clamping keeps the same row
+                // selected. Count is unchanged by a reorder, so the pre-refresh Items.Count bounds it.
+                int target = currentIndex < 0
+                    ? -1
+                    : Math.Max(0, Math.Min(listCommands.Items.Count - 1, up ? currentIndex - 1 : currentIndex + 1));
+                RefreshAfterMutation(reselectIndex: target);
                 SetStatus(up ? "Moved command up." : "Moved command down.", false);
             }
             catch (Exception ex)
@@ -1121,7 +1128,7 @@ namespace TJT.UI.Forms
 
         // Re-parses the in-memory CLEF from the held DOM so the command views + StableIds reflect the
         // current structure (ordinals shift on add/remove/reorder), repopulates the list, and reselects.
-        private void RefreshAfterMutation(string reselectStableId = null, MutableIffNode reselectLeaf = null)
+        private void RefreshAfterMutation(string reselectStableId = null, int reselectIndex = -1)
         {
             // Re-decode from the held bytes so the command views (and their re-derived StableIds) are fresh.
             byte[] current = effect.Serialize();
@@ -1131,22 +1138,29 @@ namespace TJT.UI.Forms
 
             PopulateCommandList();
 
-            // Reselect: by leaf (reorder — leaf identity is gone after reparse, so fall back to stable id),
-            // else by stable id (field edit), else clear.
-            string targetId = reselectStableId;
-            if (targetId == null && reselectLeaf != null)
-            {
-                // After a reparse the old leaf reference is stale; reselect by matching tag+position is not
-                // reliable, so leave selection cleared for reorder (the user sees the new order).
-                targetId = null;
-            }
-            if (targetId != null)
+            // Reselect: by stable id (field edit — the command stays put, its ordinal id is stable), else by
+            // index (reorder — leaf identity is gone after the reparse, so we address the moved row by its new
+            // position), else leave cleared (add/remove).
+            if (reselectStableId != null)
             {
                 foreach (ListViewItem item in listCommands.Items)
                 {
                     var r = item.Tag as CommandRowRef;
-                    if (r != null && r.StableId == targetId) { item.Selected = true; item.Focused = true; break; }
+                    if (r != null && r.StableId == reselectStableId)
+                    {
+                        item.Selected = true;
+                        item.Focused = true;
+                        item.EnsureVisible();
+                        break;
+                    }
                 }
+            }
+            else if (reselectIndex >= 0 && reselectIndex < listCommands.Items.Count)
+            {
+                ListViewItem item = listCommands.Items[reselectIndex];
+                item.Selected = true;
+                item.Focused = true;
+                item.EnsureVisible();
             }
             RefreshActionButtonState();
         }

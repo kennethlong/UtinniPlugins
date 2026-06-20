@@ -613,13 +613,45 @@ namespace TJT.UI.Forms
             using (var ofd = new OpenFileDialog())
             {
                 ofd.Title = OpenOverrideTitle;
-                ofd.Filter = "ClientEffect (*.iff)|*.iff|All files (*.*)|*.*";
+                ofd.Filter = ClefDialogFilter;
+                // Default to the loose-override folder (where saves land) instead of inheriting whatever
+                // directory the process last used for a file dialog (e.g. the client's string/en).
+                string initialDir = ResolveLooseOverrideDir();
+                if (!string.IsNullOrEmpty(initialDir)) ofd.InitialDirectory = initialDir;
                 if (ofd.ShowDialog(this) != DialogResult.OK) return;
                 OpenLooseOverride(ofd.FileName);
             }
         }
 
         private const string OpenOverrideTitle = "Open ClientEffect Override…";
+
+        // ClientEffect template files use the .cef extension (the IFF FORM tag is CLEF); .iff is offered as a
+        // secondary filter for hand-renamed copies, and All files as the escape hatch.
+        private const string ClefDialogFilter =
+            "ClientEffect (*.cef)|*.cef|IFF (*.iff)|*.iff|All files (*.*)|*.*";
+
+        // The loose-override directory (<clientRoot>/<looseSubDir>) used as the Open/Save-As initial dir, or
+        // null when the client root can't be resolved. Falls back to the client root if the loose subdir
+        // doesn't exist on disk yet (first run before any override is saved).
+        private string ResolveLooseOverrideDir()
+        {
+            try
+            {
+                string root = ResolveClientRoot();
+                if (string.IsNullOrEmpty(root)) return null;
+                string sub = ResolveLooseOverrideSubDir();
+                if (!string.IsNullOrEmpty(sub))
+                {
+                    string looseDir = Path.Combine(root, sub);
+                    if (Directory.Exists(looseDir)) return looseDir;
+                }
+                return Directory.Exists(root) ? root : null;
+            }
+            catch
+            {
+                return null;
+            }
+        }
 
         // Binds a freshly-decoded document: records provenance, resets edit/undo state, populates the
         // command list, refreshes the banner + buttons, and shows the no-selection field hint.
@@ -1220,8 +1252,10 @@ namespace TJT.UI.Forms
             using (var sfd = new SaveFileDialog())
             {
                 sfd.Title = "Save ClientEffect As…";
-                sfd.Filter = "ClientEffect (*.iff)|*.iff|All files (*.*)|*.*";
-                sfd.FileName = displayName ?? "effect.iff";
+                sfd.Filter = ClefDialogFilter;
+                sfd.FileName = displayName ?? "effect.cef";
+                string initialDir = ResolveLooseOverrideDir();
+                if (!string.IsNullOrEmpty(initialDir)) sfd.InitialDirectory = initialDir;
                 if (sfd.ShowDialog(this) != DialogResult.OK) return;
                 byte[] bytes = effect.Serialize();
                 ClientEffectSaveTargets.SaveResult result =

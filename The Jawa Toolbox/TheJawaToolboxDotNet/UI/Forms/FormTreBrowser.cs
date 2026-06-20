@@ -65,6 +65,7 @@ namespace TJT.UI.Forms
         private ToolStripMenuItem _miOpenInObjectTemplateEditor; // 11-03 — Open in Object Template Editor
         private ToolStripMenuItem _miOpenInParticleEditor; // 15-06 — Open in Particle Editor
         private ToolStripMenuItem _miOpenInTerrainEditor; // 21-03 — Open in Terrain Editor
+        private ToolStripMenuItem _miOpenInEffectsEditor; // 22-04 — Open in Effects Editor
 
         public FormTreBrowser(IEditorPlugin editorPlugin)
         {
@@ -180,6 +181,14 @@ namespace TJT.UI.Forms
             _miOpenInTerrainEditor = new ToolStripMenuItem("Open in Terrain Editor");
             _miOpenInTerrainEditor.Click += OnOpenInTerrainEditor;
             _tvTreContextMenu.Items.Add(_miOpenInTerrainEditor);
+            // 22-04: Open in Effects Editor — HIDDEN unless the selected entry is a resolvable .cef (the
+            // ClientEffect FORM CLEF carrier). Like Terrain, the hand-off launches the singleton
+            // FormClientEffectEditor owned by the docked EffectsSubPanel (reached via GetStandalonePanels())
+            // read-only — the first commit writes a loose override (D-09; the TRE is never edited in place).
+            // The CLEF is decoded on click inside the editor's own try/catch (unknown/truncated → raw/hex).
+            _miOpenInEffectsEditor = new ToolStripMenuItem("Open in Effects Editor");
+            _miOpenInEffectsEditor.Click += OnOpenInEffectsEditor;
+            _tvTreContextMenu.Items.Add(_miOpenInEffectsEditor);
             _tvTreContextMenu.Opening += OnTvTreContextMenuOpening;
             tvTre.ContextMenuStrip = _tvTreContextMenu;
             // Right-click should select the underlying node so the menu's logic targets it.
@@ -252,6 +261,14 @@ namespace TJT.UI.Forms
             _miOpenInTerrainEditor.Visible = !d.EnumerateOnly &&
                 string.Equals(Path.GetExtension(pn.FullPath), ".trn", StringComparison.OrdinalIgnoreCase);
             _miOpenInTerrainEditor.ToolTipText = "Opens this terrain in the Terrain Editor (read-only — first save writes a loose override).";
+
+            // 22-04: HIDE the Effects-Editor item unless the entry is a resolvable .cef (the ClientEffect
+            // carrier). The payload is NOT resolved at menu-Opening time (TrePayloadResolver resolves lazily
+            // on click), so the gate is extension-only here; the FORM CLEF structure is verified — and
+            // degrades to raw/hex, never hard-fails — inside FormClientEffectEditor.OpenFromTreEntry on click.
+            _miOpenInEffectsEditor.Visible = !d.EnumerateOnly &&
+                string.Equals(Path.GetExtension(pn.FullPath), ".cef", StringComparison.OrdinalIgnoreCase);
+            _miOpenInEffectsEditor.ToolTipText = "Opens this client effect in the Effects Editor (read-only — first save writes a loose override).";
         }
 
         private void OnOpenInIffEditor(object sender, EventArgs e)
@@ -410,6 +427,94 @@ namespace TJT.UI.Forms
                 TJT.UI.SubPanels.TerrainSubPanel panel = c as TJT.UI.SubPanels.TerrainSubPanel;
                 if (panel != null) return panel;
                 TJT.UI.SubPanels.TerrainSubPanel nested = FindTerrainSubPanelIn(c);
+                if (nested != null) return nested;
+            }
+            return null;
+        }
+
+        // 22-04 — TRE Browser hand-off to the Effects (ClientEffect) Editor. Like Terrain, the editor is a
+        // roomy host LAUNCHED by the docked EffectsSubPanel (D-04), so the hand-off target is the SubPanel
+        // instance reached via GetStandalonePanels() (the "Controls" container). Mirrors OnOpenInTerrainEditor:
+        // resolve the payload OFF the UI thread, then marshal back to the panel's OpenFromTre (which launches
+        // the singleton host and decodes inside its own try/catch — red status on failure, never a hard throw;
+        // the first commit writes a loose override, D-09).
+        private void OnOpenInEffectsEditor(object sender, EventArgs e)
+        {
+            PathNode pn = tvTre.SelectedNode != null ? tvTre.SelectedNode.Tag as PathNode : null;
+            if (pn == null || !pn.IsLeaf) return;
+            TreEntryDescriptor d;
+            if (_index == null || !_index.TryGetDescriptor(pn.FullPath, out d)) return;
+            TreEntryDescriptor descriptor = d;
+            string logicalPath = pn.FullPath;
+            Task.Run(() =>
+            {
+                try
+                {
+                    byte[] payload;
+                    bool ok = TrePayloadResolver.TryResolve(descriptor, out payload);
+                    if (!IsHandleCreated) return;
+                    BeginInvoke((Action)(() =>
+                    {
+                        if (!ok)
+                        {
+                            lblStatus.Text = "Cannot open " + logicalPath + " — payload is enumerate-only.";
+                            return;
+                        }
+                        TJT.UI.SubPanels.EffectsSubPanel panel = FindEffectsSubPanel();
+                        if (panel == null)
+                        {
+                            lblStatus.Text = "Effects Editor is unavailable in this session.";
+                            return;
+                        }
+                        // The host decodes inside its OWN try/catch (red status on failure — never a hard
+                        // throw); first commit writes a loose override (D-09; the TRE is never edited in place).
+                        panel.OpenFromTre(payload, descriptor.ResolvedArchivePath, logicalPath);
+                    }));
+                }
+                catch (Exception ex)
+                {
+                    if (IsHandleCreated)
+                    {
+                        BeginInvoke((Action)(() =>
+                        {
+                            lblStatus.Text = "Open-in-Effects-Editor failed: " + ex.Message;
+                            lblStatus.ForeColor = Color.Red;
+                        }));
+                    }
+                }
+            });
+        }
+
+        // Locate the docked EffectsSubPanel the plugin registered in the GetStandalonePanels() "Controls"
+        // container (the docked SubPanel owns the singleton FormClientEffectEditor host — D-04). Mirrors
+        // FindTerrainSubPanel: consult CollapsiblePanel.WrappedSubPanel first (returns the SubPanel held since
+        // construction even while the section is collapsed), then fall back to a direct-cast / recursive walk.
+        private TJT.UI.SubPanels.EffectsSubPanel FindEffectsSubPanel()
+        {
+            foreach (SubPanelContainer container in editorPlugin.GetStandalonePanels())
+            {
+                if (container == null) continue;
+                TJT.UI.SubPanels.EffectsSubPanel found = FindEffectsSubPanelIn(container);
+                if (found != null) return found;
+            }
+            return null;
+        }
+
+        private static TJT.UI.SubPanels.EffectsSubPanel FindEffectsSubPanelIn(Control parent)
+        {
+            if (parent == null) return null;
+            foreach (Control c in parent.Controls)
+            {
+                CollapsiblePanel collapsible = c as CollapsiblePanel;
+                if (collapsible != null)
+                {
+                    TJT.UI.SubPanels.EffectsSubPanel wrapped = collapsible.WrappedSubPanel as TJT.UI.SubPanels.EffectsSubPanel;
+                    if (wrapped != null) return wrapped;
+                }
+
+                TJT.UI.SubPanels.EffectsSubPanel panel = c as TJT.UI.SubPanels.EffectsSubPanel;
+                if (panel != null) return panel;
+                TJT.UI.SubPanels.EffectsSubPanel nested = FindEffectsSubPanelIn(c);
                 if (nested != null) return nested;
             }
             return null;

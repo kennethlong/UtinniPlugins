@@ -26,7 +26,8 @@
 // select->assign gesture (Interaction 1) on a byte selection in the Template builder pane. It captures a
 // Name, a kernel Type, an optional repeat-spec (the 3 D-10 kinds), and an optional enum/flags map with
 // the EXPLICIT enum-vs-flags radio (Pitfall 4 — a flags entry is a bit POSITION 1..32, not a mask), plus
-// an encoding for the string kinds. On accept it produces a FieldRecord — the SAME engine type the
+// an encoding for CString ONLY (WR-04: FixedChar is an opaque byte span, so its encoding is inert and
+// the combo is disabled for it). On accept it produces a FieldRecord — the SAME engine type the
 // headless KernelCodec consumes; the dialog owns NO format logic.
 //
 // Code-built (no Designer/.resx) on purpose: a small modal with no image resources avoids the MSB3823
@@ -103,6 +104,16 @@ namespace TJT.UI.Forms
             cboEncoding.Items.AddRange(new object[] { "(none)", "ascii", "latin1" });
             cboEncoding.SelectedIndex = 0;
             Controls.Add(cboEncoding);
+            // WR-04: Encoding applies ONLY to CString. FixedChar is an opaque byte span (decoded as a
+            // byte[], never a string), so its encoding is inert -- offering it would be a dishonest
+            // affordance. Enable the combo only for CString; the default type (U32) starts it disabled.
+            cboType.SelectedIndexChanged += (s, e) =>
+            {
+                bool isCString = (cboType.SelectedItem as string) == KernelType.CString.ToString();
+                cboEncoding.Enabled = isCString;
+                if (!isCString) cboEncoding.SelectedIndex = 0; // reset to "(none)"
+            };
+            cboEncoding.Enabled = false; // default type is U32 (not a string kind)
             y += rowH;
 
             Controls.Add(MakeLabel("Repeat", labelLeft, y + 3));
@@ -200,8 +211,11 @@ namespace TJT.UI.Forms
                 ByteWidth = NeedsWidth(type) ? Math.Max(0, selectionWidth) : 0,
             };
 
+            // WR-04: Encoding applies ONLY to CString. FixedChar is an opaque byte span (decoded as a
+            // byte[], never a string), so an encoding on it is inert and would imply a lossy string
+            // round-trip that breaks byte-exactness. Never stamp an encoding on a non-CString field.
             string enc = cboEncoding.SelectedItem as string;
-            if (!string.IsNullOrEmpty(enc) && enc != "(none)")
+            if (type == KernelType.CString && !string.IsNullOrEmpty(enc) && enc != "(none)")
             {
                 field.Encoding = enc;
             }

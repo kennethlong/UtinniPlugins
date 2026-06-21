@@ -205,6 +205,9 @@ namespace TJT.UI.Forms
             btnTemplateMode.Click += (s, e) => SetTemplateMode(true);
             BuildTemplateAssignMenu();
             templateBuilderPane.FieldValueCommitRequested += OnTemplateFieldValueCommit;
+            // 23-08: the pane's "Select a template…" picker hands a pack template back to apply it to the
+            // current leaf (clone-on-apply, non-destructive — the same path the auto-apply resolver takes).
+            templateBuilderPane.TemplateSelected += OnTemplateSelected;
 
             // Leaf payload context menu (D-04.2) — Replace bytes from file / Export bytes to file.
             BuildLeafContextMenu();
@@ -1960,6 +1963,18 @@ namespace TJT.UI.Forms
                 lblStatus.Text = "Value edit failed: " + ex.Message + " Your edits are kept in the editor.";
                 lblStatus.ForeColor = Color.Red;
             }
+        }
+
+        // 23-08: apply a template the user picked in the "Select a template…" list to the current leaf.
+        // Clone-on-apply (the SAME D-01 round-trip clone the resolver uses) so authoring never mutates the
+        // shared pack instance, then open Template mode. Non-destructive: nothing is written to disk — the
+        // applied template is held in currentTemplate, and value edits ride IffEditController as usual.
+        private void OnTemplateSelected(object sender, TemplateSelectedEventArgs e)
+        {
+            if (e == null || e.Template == null || currentLeaf == null) return;
+            PushTemplateAuthoringUndo();
+            currentTemplate = CloneTemplate(e.Template);
+            SetTemplateMode(true);
         }
 
         // Coerces the user's typed text to the field's decoded CLR type (long/double/string). Returns null

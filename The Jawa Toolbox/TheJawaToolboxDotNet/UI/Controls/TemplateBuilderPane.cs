@@ -40,14 +40,26 @@
 //     setting a larger distance first throws InvalidOperationException, which from a ctor would fail the
 //     whole plugin's MEF load).
 //   - the ctor MUST NOT throw — defaults survive a bad ini; the splitter restore is guarded + try/catch.
+//
+// 23-08 (PROD-IFFT-03 manage half) extends this pane with the pack-management surface: a "Save▾" menu on
+// the status strip that saves the in-progress template into a WRITABLE pack (the shipped pack is shown
+// disabled — read-only), selects among scanned packs, and imports/exports a template pack/template. Save
+// serializes the current TemplateModel via TemplateJson into the chosen pack dir, resolving the write path
+// WITHIN the pack root (LooseOverridePath containment — threat T-23-08-PATH); overwrite + delete route
+// through FormSaveConfirmDialog (threat T-23-08-DESTRUCT). Applying/editing stay non-destructive — nothing
+// touches disk until an explicit Save▾.
 
 using System;
 using System.Collections.Generic;
 using System.Drawing;
 using System.Globalization;
+using System.IO;
 using System.Text;
 using System.Windows.Forms;
+using TJT.UI.Forms;
 using UtinniCoreDotNet.Formats.Template;
+using UtinniCoreDotNet.Saving;
+using UtinniCoreDotNet.UI.Controls;
 using UtinniCoreDotNet.UI.Theme;
 
 namespace TJT.UI.Controls
@@ -75,10 +87,14 @@ namespace TJT.UI.Controls
         private readonly TextBox txtBytes;           // TOP — raw-byte monospace grid
         private readonly ListView lvFields;          // BOTTOM — decoded FieldRecord rows
         private readonly Label lblTemplateStatus;    // the live round-trip indicator
+        private readonly UtinniButton btnSaveTemplate; // 23-08 — the "Save▾" pack-management drop-down
 
         // ── the in-progress template + its bound payload (UI state only) ──────────
         private TemplateModel template;
         private byte[] payload = new byte[0];
+
+        // 23-08: optional project-local pack dir (the open mod's own pack) — null until the host sets it.
+        private string projectLocalDir;
 
         // Per-line byte offsets so a TextBox selection (caret index) maps back to a byte index. Index i
         // holds the byte offset at the start of display line i; ColZeroByte/CharsPerByte size the hex cols.
@@ -92,6 +108,12 @@ namespace TJT.UI.Controls
         /// (the host re-encodes via <see cref="KernelCodec.Encode"/> and applies through IffEditController).
         /// Carries the field name + the new text the user typed.</summary>
         public event EventHandler<FieldValueCommitEventArgs> FieldValueCommitRequested;
+
+        /// <summary>23-08: raised when the user picks a template from the "Select a template…" list. The
+        /// host clones it onto the current leaf (the same auto-apply path the resolver takes) so applying a
+        /// template stays non-destructive (undoable; nothing on disk until an explicit Save▾). Carries the
+        /// chosen <see cref="TemplateModel"/>.</summary>
+        public event EventHandler<TemplateSelectedEventArgs> TemplateSelected;
 
         public TemplateBuilderPane()
         {
@@ -108,6 +130,17 @@ namespace TJT.UI.Controls
                 ForeColor = Colors.FontDisabled(),
                 TextAlign = ContentAlignment.MiddleLeft,
             };
+            // 23-08: the "Save▾" pack-management drop-down lives at the right edge of the status strip
+            // (Dock.Right, 90px). Clicking it opens the per-pack save / select / import / export menu.
+            btnSaveTemplate = new UtinniButton
+            {
+                Dock = DockStyle.Right,
+                Width = 90,
+                Text = "Save ▾",
+                UseDisableColor = true,
+                UseVisualStyleBackColor = true,
+            };
+            btnSaveTemplate.Click += OnSaveMenuButtonClick;
             pnlTemplateStatus = new Panel
             {
                 Dock = DockStyle.Bottom,
@@ -115,7 +148,9 @@ namespace TJT.UI.Controls
                 Padding = new Padding(3, 3, 3, 3),
                 BackColor = Colors.Primary(),
             };
+            // Fill child (the status label) added FIRST (front-most), then the Right-docked Save button.
             pnlTemplateStatus.Controls.Add(lblTemplateStatus);
+            pnlTemplateStatus.Controls.Add(btnSaveTemplate);
 
             // ── raw-byte grid (TOP) — Consolas 9pt monospace, read-only, selectable ──
             txtBytes = new TextBox
@@ -263,6 +298,398 @@ namespace TJT.UI.Controls
             lblTemplateStatus.Text =
                 "Edit applied · payload " + oldLen + "→" + newLen + " bytes · count field recomputed.";
             lblTemplateStatus.ForeColor = Colors.Font();
+        }
+
+        /// <summary>23-08: sets the optional project-local pack dir (the open mod's own pack). When set, the
+        /// Save menu offers a "Project pack ({name})" target in addition to "User templates"; null hides it.
+        /// The host supplies it from the open document's mod directory when one is known.</summary>
+        public void SetProjectLocalPackDir(string dirOrNull)
+        {
+            projectLocalDir = string.IsNullOrEmpty(dirOrNull) ? null : dirOrNull;
+        }
+
+        // ── 23-08: pack management (save / select / import / export over TemplatePackStore) ──────────
+        //
+        // The "Save▾" button builds its menu on demand against the live scanned-pack allow-list (D-12) so a
+        // pack added/removed since the pane opened is reflected. Save serializes the current TemplateModel
+        // via TemplateJson into the chosen WRITABLE pack dir; the write path is resolved WITHIN the pack
+        // root via LooseOverridePath (containment — T-23-08-PATH). The shipped pack is shown DISABLED
+        // ("Shipped (read-only)") and is never a write target. Overwrite + delete route through
+        // FormSaveConfirmDialog with the exact UI-SPEC headings/bodies/accept verbs (T-23-08-DESTRUCT).
+
+        // Builds + drops the Save▾ menu under the button. Built fresh each click so the pack list is current.
+        private void OnSaveMenuButtonClick(object sender, EventArgs e)
+        {
+            UtinniContextMenuStrip menu = BuildSaveMenu();
+            menu.Show(btnSaveTemplate, new Point(0, btnSaveTemplate.Height));
+        }
+
+        // The pack-management menu (UI-SPEC §Copywriting Save/Import/Export rows). Save sub-items per
+        // writable scanned dir; the shipped pack disabled; then Select / Import / Export.
+        private UtinniContextMenuStrip BuildSaveMenu()
+        {
+            var menu = new UtinniContextMenuStrip();
+
+            // "Save template to pack…" → a sub-item per writable pack; shipped shown disabled.
+            var miSave = new ToolStripMenuItem("Save template to pack…");
+            string userDir = UserTemplatesDir();
+            if (!string.IsNullOrEmpty(userDir))
+            {
+                var miUser = new ToolStripMenuItem("User templates");
+                miUser.Click += (s, a) => SaveToPack(userDir);
+                miSave.DropDownItems.Add(miUser);
+            }
+            if (!string.IsNullOrEmpty(projectLocalDir))
+            {
+                var miProject = new ToolStripMenuItem("Project pack (" + Path.GetFileName(projectLocalDir.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar)) + ")");
+                miProject.Click += (s, a) => SaveToPack(projectLocalDir);
+                miSave.DropDownItems.Add(miProject);
+            }
+            // The shipped pack is read-only: shown disabled, never a write target.
+            var miShipped = new ToolStripMenuItem("Shipped (read-only)") { Enabled = false };
+            miSave.DropDownItems.Add(miShipped);
+            menu.Items.Add(miSave);
+
+            menu.Items.Add(new ToolStripSeparator());
+
+            // "Select a template…" → lists templates across the scanned packs (load-order) and applies one.
+            var miSelect = new ToolStripMenuItem("Select a template…");
+            miSelect.Click += (s, a) => ShowSelectTemplate();
+            menu.Items.Add(miSelect);
+
+            menu.Items.Add(new ToolStripSeparator());
+
+            // Import / export (file-dialog driven — no new file widget, mirrors the host's existing usage).
+            var miImport = new ToolStripMenuItem("Import template pack…");
+            miImport.Click += (s, a) => ImportTemplatePack();
+            menu.Items.Add(miImport);
+            var miExport = new ToolStripMenuItem("Export this template…");
+            miExport.Click += (s, a) => ExportTemplate();
+            menu.Items.Add(miExport);
+
+            return menu;
+        }
+
+        // The app-data user pack dir (%APPDATA%/Utinni/templates) — created on first save. This is the
+        // documented per-user writable pack root (TemplatePackStore.DefaultRoots app-data root).
+        private static string UserTemplatesDir()
+        {
+            try
+            {
+                string appData = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
+                if (string.IsNullOrEmpty(appData)) return null;
+                return Path.Combine(appData, "Utinni", "templates");
+            }
+            catch
+            {
+                return null;
+            }
+        }
+
+        // Serializes the current template (D-01 JSON) into packRoot/<key>.json. The file name derives from
+        // the match key; the write path resolves WITHIN packRoot (LooseOverridePath containment — escapes
+        // are rejected before any write). An existing same-key file routes through FormSaveConfirmDialog
+        // (overwrite confirm) before the write.
+        private void SaveToPack(string packRoot)
+        {
+            if (template == null || template.Fields == null || template.Fields.Count == 0)
+            {
+                lblTemplateStatus.Text = "Nothing to save yet — assign at least one field first.";
+                lblTemplateStatus.ForeColor = Color.Red;
+                return;
+            }
+            try
+            {
+                Directory.CreateDirectory(packRoot);
+                string canonicalRoot = Path.GetFullPath(packRoot);
+                string fileName = PackFileName(template);
+                // Resolve WITHIN the pack root — the containment gate the save-path uses everywhere.
+                string fullPath = LooseOverridePath.Resolve(canonicalRoot, fileName);
+
+                string packLabel = Path.GetFileName(canonicalRoot.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar));
+                string keyName = DisplayName(template);
+                if (File.Exists(fullPath))
+                {
+                    // Destructive: overwrite an existing same-key template → confirm (UI-SPEC §Destructive).
+                    using (var dlg = new FormSaveConfirmDialog(
+                        "Overwrite '" + keyName + "' in " + packLabel + "?",
+                        "A template with this match key already exists in this pack. Overwriting replaces its field definitions.",
+                        "Overwrite", "Cancel"))
+                    {
+                        if (dlg.ShowDialog(this) != DialogResult.OK ||
+                            dlg.Outcome != FormSaveConfirmDialog.ConfirmOutcome.Accepted)
+                        {
+                            return;
+                        }
+                    }
+                }
+
+                if (template.Version <= 0) template.Version = TemplateModelDefaults.CurrentVersion;
+                string json = TemplateJson.Serialize(template);
+                File.WriteAllText(fullPath, json);
+                lblTemplateStatus.Text = "Saved '" + keyName + "' to " + packLabel + ".";
+                lblTemplateStatus.ForeColor = StatusGreen;
+            }
+            catch (Exception ex)
+            {
+                lblTemplateStatus.Text = "Save failed: " + ex.Message;
+                lblTemplateStatus.ForeColor = Color.Red;
+            }
+        }
+
+        // The select-a-template list: enumerates the scanned packs (load-order) and applies the picked one
+        // to the current leaf via TemplateSelected (the host clones + auto-applies; non-destructive). Per-row
+        // Delete routes through FormSaveConfirmDialog and removes the JSON from its pack.
+        private void ShowSelectTemplate()
+        {
+            List<TemplateLoadResult> all;
+            try
+            {
+                all = TemplatePackStore.DefaultRoots(projectLocalDir).LoadAll();
+            }
+            catch (Exception ex)
+            {
+                lblTemplateStatus.Text = "Could not scan template packs: " + ex.Message;
+                lblTemplateStatus.ForeColor = Color.Red;
+                return;
+            }
+
+            var loaded = new List<TemplateLoadResult>();
+            foreach (TemplateLoadResult r in all)
+            {
+                if (r != null && r.Loaded) loaded.Add(r);
+            }
+
+            using (var dlg = new UtinniCoreDotNet.UI.Forms.UtinniForm())
+            {
+                dlg.Text = "Select a template";
+                dlg.DrawName = true;
+                dlg.MinimizeBox = false;
+                dlg.MaximizeBox = false;
+                dlg.ClientSize = new Size(460, 280);
+                dlg.StartPosition = FormStartPosition.CenterParent;
+
+                var lbl = new UtinniLabel
+                {
+                    Text = loaded.Count + " templates across the scanned packs. Apply one to this chunk:",
+                    Left = 12, Top = 40, Width = 436, Height = 20, ForeColor = Colors.Font(),
+                };
+                var list = new ListBox
+                {
+                    Left = 12, Top = 64, Width = 436, Height = 150,
+                    BackColor = Colors.PrimaryHighlight(), ForeColor = Colors.Font(),
+                    BorderStyle = BorderStyle.FixedSingle,
+                };
+                foreach (TemplateLoadResult r in loaded)
+                {
+                    list.Items.Add(DisplayName(r.Template) + "  ·  " + Path.GetFileName(r.Path));
+                }
+                if (list.Items.Count > 0) list.SelectedIndex = 0;
+
+                var btnApply = new UtinniButton
+                {
+                    Text = "Apply", Left = 200, Top = 226, Width = 70,
+                    UseDisableColor = true, UseVisualStyleBackColor = true,
+                };
+                btnApply.Click += (s, a) => { dlg.DialogResult = DialogResult.OK; dlg.Close(); };
+                var btnDelete = new UtinniButton
+                {
+                    Text = "Delete", Left = 278, Top = 226, Width = 80,
+                    UseDisableColor = true, UseVisualStyleBackColor = true,
+                };
+                btnDelete.Click += (s, a) =>
+                {
+                    int i = list.SelectedIndex;
+                    if (i < 0 || i >= loaded.Count) return;
+                    if (DeleteTemplate(loaded[i]))
+                    {
+                        loaded.RemoveAt(i);
+                        list.Items.RemoveAt(i);
+                        if (list.Items.Count > 0) list.SelectedIndex = 0;
+                    }
+                };
+                var btnCancel = new UtinniButton
+                {
+                    Text = "Cancel", Left = 366, Top = 226, Width = 80,
+                    UseDisableColor = true, UseVisualStyleBackColor = true,
+                };
+                btnCancel.Click += (s, a) => { dlg.DialogResult = DialogResult.Cancel; dlg.Close(); };
+
+                dlg.Controls.Add(lbl);
+                dlg.Controls.Add(list);
+                dlg.Controls.Add(btnApply);
+                dlg.Controls.Add(btnDelete);
+                dlg.Controls.Add(btnCancel);
+                dlg.AcceptButton = btnApply;
+                dlg.CancelButton = btnCancel;
+
+                if (dlg.ShowDialog(this) != DialogResult.OK) return;
+                int sel = list.SelectedIndex;
+                if (sel < 0 || sel >= loaded.Count) return;
+                var handler = TemplateSelected;
+                if (handler != null)
+                {
+                    handler(this, new TemplateSelectedEventArgs(loaded[sel].Template));
+                }
+            }
+        }
+
+        // Destructive: delete a template's JSON from its pack → confirm (UI-SPEC §Destructive), then File.Delete
+        // (only when the path is contained under one of the scanned roots — never deletes outside a pack).
+        private bool DeleteTemplate(TemplateLoadResult r)
+        {
+            if (r == null || string.IsNullOrEmpty(r.Path)) return false;
+            string name = DisplayName(r.Template);
+            string packLabel = Path.GetFileName(Path.GetDirectoryName(r.Path) ?? "");
+            using (var dlg = new FormSaveConfirmDialog(
+                "Delete template '" + name + "'?",
+                "This removes the JSON file from " + packLabel + ". Chunks it auto-applied to will fall back to raw hex.",
+                "Delete", "Cancel"))
+            {
+                if (dlg.ShowDialog(this) != DialogResult.OK ||
+                    dlg.Outcome != FormSaveConfirmDialog.ConfirmOutcome.Accepted)
+                {
+                    return false;
+                }
+            }
+            try
+            {
+                if (!IsUnderAScannedRoot(r.Path))
+                {
+                    lblTemplateStatus.Text = "Refused to delete — file is outside the template packs.";
+                    lblTemplateStatus.ForeColor = Color.Red;
+                    return false;
+                }
+                File.Delete(r.Path);
+                lblTemplateStatus.Text = "Deleted '" + name + "' from " + packLabel + ".";
+                lblTemplateStatus.ForeColor = Colors.Font();
+                return true;
+            }
+            catch (Exception ex)
+            {
+                lblTemplateStatus.Text = "Delete failed: " + ex.Message;
+                lblTemplateStatus.ForeColor = Color.Red;
+                return false;
+            }
+        }
+
+        // Import: pick a template JSON via OpenFileDialog and copy it into the user pack (validated as a real
+        // template first; the copy target resolves WITHIN the user pack root — containment).
+        private void ImportTemplatePack()
+        {
+            string userDir = UserTemplatesDir();
+            if (string.IsNullOrEmpty(userDir)) return;
+            using (var ofd = new OpenFileDialog())
+            {
+                ofd.Title = "Import template pack";
+                ofd.Filter = "Template JSON (*.json)|*.json|All files (*.*)|*.*";
+                if (ofd.ShowDialog(this) != DialogResult.OK) return;
+                try
+                {
+                    string json = File.ReadAllText(ofd.FileName);
+                    TemplateModel imported = TemplateJson.Deserialize(json); // validate before copying
+                    Directory.CreateDirectory(userDir);
+                    string canonicalRoot = Path.GetFullPath(userDir);
+                    string fullPath = LooseOverridePath.Resolve(canonicalRoot, PackFileName(imported));
+                    if (File.Exists(fullPath))
+                    {
+                        using (var dlg = new FormSaveConfirmDialog(
+                            "Overwrite '" + DisplayName(imported) + "' in User templates?",
+                            "A template with this match key already exists in this pack. Overwriting replaces its field definitions.",
+                            "Overwrite", "Cancel"))
+                        {
+                            if (dlg.ShowDialog(this) != DialogResult.OK ||
+                                dlg.Outcome != FormSaveConfirmDialog.ConfirmOutcome.Accepted)
+                            {
+                                return;
+                            }
+                        }
+                    }
+                    File.WriteAllText(fullPath, TemplateJson.Serialize(imported));
+                    lblTemplateStatus.Text = "Imported '" + DisplayName(imported) + "' into User templates.";
+                    lblTemplateStatus.ForeColor = StatusGreen;
+                }
+                catch (Exception ex)
+                {
+                    lblTemplateStatus.Text = "Import failed: " + ex.Message;
+                    lblTemplateStatus.ForeColor = Color.Red;
+                }
+            }
+        }
+
+        // Export: write the current template (D-01 JSON) to a user-chosen path via SaveFileDialog.
+        private void ExportTemplate()
+        {
+            if (template == null || template.Fields == null || template.Fields.Count == 0)
+            {
+                lblTemplateStatus.Text = "Nothing to export yet — assign at least one field first.";
+                lblTemplateStatus.ForeColor = Color.Red;
+                return;
+            }
+            using (var sfd = new SaveFileDialog())
+            {
+                sfd.Title = "Export this template";
+                sfd.Filter = "Template JSON (*.json)|*.json|All files (*.*)|*.*";
+                sfd.FileName = PackFileName(template);
+                if (sfd.ShowDialog(this) != DialogResult.OK) return;
+                try
+                {
+                    if (template.Version <= 0) template.Version = TemplateModelDefaults.CurrentVersion;
+                    File.WriteAllText(sfd.FileName, TemplateJson.Serialize(template));
+                    lblTemplateStatus.Text = "Exported to " + Path.GetFileName(sfd.FileName) + ".";
+                    lblTemplateStatus.ForeColor = StatusGreen;
+                }
+                catch (Exception ex)
+                {
+                    lblTemplateStatus.Text = "Export failed: " + ex.Message;
+                    lblTemplateStatus.ForeColor = Color.Red;
+                }
+            }
+        }
+
+        // True iff path lies within one of the scanned pack roots (defense for delete — never touch a file
+        // outside a pack). Routes through the SAME containment predicate the loader uses.
+        private bool IsUnderAScannedRoot(string path)
+        {
+            try
+            {
+                string full = Path.GetFullPath(path);
+                foreach (TemplatePackRoot root in TemplatePackStore.DefaultRoots(projectLocalDir).Roots)
+                {
+                    if (LooseOverridePath.IsContainedUnderRoot(root.Directory, full)) return true;
+                }
+            }
+            catch
+            {
+            }
+            return false;
+        }
+
+        // A stable, filesystem-safe file name derived from the template's match key (ancestor·tag) so the
+        // same template overwrites its prior save rather than spawning duplicates.
+        private static string PackFileName(TemplateModel t)
+        {
+            string baseName = DisplayName(t);
+            var sb = new StringBuilder();
+            foreach (char c in baseName)
+            {
+                sb.Append(char.IsLetterOrDigit(c) ? c : '_');
+            }
+            string clean = sb.ToString().Trim('_');
+            if (clean.Length == 0) clean = "template";
+            return clean + ".json";
+        }
+
+        // A human display name for a template = its match key (tag under ancestor path, or tag-only).
+        private static string DisplayName(TemplateModel t)
+        {
+            if (t == null) return "template";
+            string tag = (t.MatchLeafTag ?? "").Trim();
+            if (t.MatchTagOnly || string.IsNullOrEmpty(t.MatchAncestorPath))
+            {
+                return string.IsNullOrEmpty(tag) ? "template" : tag;
+            }
+            return tag + " under " + t.MatchAncestorPath;
         }
 
         // ── rendering ─────────────────────────────────────────────────────────────
@@ -620,5 +1047,18 @@ namespace TJT.UI.Controls
 
         /// <summary>The raw text the user typed (the host coerces it to the field's CLR type before encode).</summary>
         public string NewText { get; private set; }
+    }
+
+    /// <summary>23-08: carries a template the user picked from the "Select a template…" list out to the host,
+    /// which clones it onto the current leaf (the non-destructive auto-apply path).</summary>
+    public sealed class TemplateSelectedEventArgs : EventArgs
+    {
+        public TemplateSelectedEventArgs(TemplateModel template)
+        {
+            Template = template;
+        }
+
+        /// <summary>The selected template (a pack-loaded instance; the host clones before applying).</summary>
+        public TemplateModel Template { get; private set; }
     }
 }

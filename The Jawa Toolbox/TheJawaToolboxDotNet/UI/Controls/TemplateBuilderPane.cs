@@ -253,7 +253,11 @@ namespace TJT.UI.Controls
         public void SetPayload(byte[] leafPayload, TemplateModel model)
         {
             payload = leafPayload ?? new byte[0];
-            template = model ?? new TemplateModel { Version = 1, Fields = new List<FieldRecord>() };
+            // WR-02: clone on seed so the pane never mutates the caller's shared TemplateModel. Other call
+            // paths (an auto-resolved template, or any future caller) would otherwise have the pane's
+            // in-progress edits leak back into a pack-loaded instance that is later re-listed.
+            template = TemplateModelDefaults.Clone(model)
+                       ?? new TemplateModel { Version = 1, Fields = new List<FieldRecord>() };
             if (template.Fields == null) template.Fields = new List<FieldRecord>();
             SelectionStart = -1;
             SelectionLength = 0;

@@ -194,6 +194,9 @@
     <Compile Include="UI\Controls\IffChunkTree.cs">
       <SubType>UserControl</SubType>
     </Compile>
+    <Compile Include="UI\Controls\TemplateBuilderPane.cs">
+      <SubType>UserControl</SubType>
+    </Compile>
     <Compile Include="UI\Controls\ThemedDataGridView.cs">
       <SubType>Component</SubType>
     </Compile>

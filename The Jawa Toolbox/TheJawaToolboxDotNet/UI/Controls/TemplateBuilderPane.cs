@@ -722,6 +722,11 @@ namespace TJT.UI.Controls
             }
             catch (Exception)
             {
+                // WR-06: FitCheck and Decode are two engine calls that can disagree -- FitCheck may return a
+                // report while the subsequent Decode throws (an inconsistency the pure fit-check tolerates
+                // but decode does not). Null the fit so the indicator shows the HONEST does-not-fit state
+                // rather than a stale (possibly green) report over a cleared field list.
+                fit = null;
                 // A template that over-reads (or any in-progress inconsistency) surfaces as does-not-fit;
                 // the field rows show as far as the safe walk got (none on a hard failure). Never throws out.
             }

@@ -58,6 +58,8 @@ namespace TJT.UI.Forms
             this.lblLeafHeader = new UtinniCoreDotNet.UI.Controls.UtinniLabel();
             this.btnHexMode = new UtinniCoreDotNet.UI.Controls.UtinniButton();
             this.btnTextMode = new UtinniCoreDotNet.UI.Controls.UtinniButton();
+            this.btnTemplateMode = new UtinniCoreDotNet.UI.Controls.UtinniButton();
+            this.templateBuilderPane = new TJT.UI.Controls.TemplateBuilderPane();
             this.txtHex = new System.Windows.Forms.TextBox();
             this.txtText = new UtinniCoreDotNet.UI.Controls.UtinniTextbox();
             this.pnlStatus = new System.Windows.Forms.Panel();
@@ -191,7 +193,11 @@ namespace TJT.UI.Forms
             //
             this.pnlLeafEditor.Dock = System.Windows.Forms.DockStyle.Fill;
             this.pnlLeafEditor.Name = "pnlLeafEditor";
-            // Add Fill child (txtHex) BEFORE docked siblings so Fill renders front-most
+            // Add Fill children (templateBuilderPane / txtHex) BEFORE docked siblings so Fill renders
+            // front-most (Pitfall 8). templateBuilderPane is the 23-07 Template-mode pane; only one of the
+            // Fill children is Visible at a time (mode toggle), so adding it first keeps it front-most when
+            // shown without disturbing the existing hex/text z-order.
+            this.pnlLeafEditor.Controls.Add(this.templateBuilderPane);
             this.pnlLeafEditor.Controls.Add(this.txtHex);
             this.pnlLeafEditor.Controls.Add(this.txtText);
             this.pnlLeafEditor.Controls.Add(this.pnlLeafHeader);
@@ -201,9 +207,13 @@ namespace TJT.UI.Forms
             this.pnlLeafHeader.Dock = System.Windows.Forms.DockStyle.Top;
             this.pnlLeafHeader.Height = 22;
             this.pnlLeafHeader.Name = "pnlLeafHeader";
-            this.pnlLeafHeader.Controls.Add(this.btnTextMode);
-            this.pnlLeafHeader.Controls.Add(this.btnHexMode);
-            this.pnlLeafHeader.Controls.Add(this.lblLeafHeader);
+            // Dock.Right cluster: the FIRST-added control docks rightmost, the LAST-added docks leftmost
+            // (same reverse-add semantics the toolbar uses). btnTemplateMode is added LAST so it renders
+            // LEFTMOST of the three toggles, per UI-SPEC ("to the LEFT of the existing two").
+            this.pnlLeafHeader.Controls.Add(this.btnTextMode);     // Right (rightmost)
+            this.pnlLeafHeader.Controls.Add(this.btnHexMode);      // Right (middle)
+            this.pnlLeafHeader.Controls.Add(this.btnTemplateMode); // Right (leftmost of the cluster)
+            this.pnlLeafHeader.Controls.Add(this.lblLeafHeader);   // Fill
             //
             // lblLeafHeader (Dock.Fill)
             //
@@ -231,6 +241,23 @@ namespace TJT.UI.Forms
             this.btnTextMode.Visible = false;
             this.btnTextMode.UseDisableColor = true;
             this.btnTextMode.UseVisualStyleBackColor = true;
+            //
+            // btnTemplateMode (Dock.Right, 50px) — 23-07 toggles to the Tier-B Template builder pane.
+            // Always visible when a leaf is selected (unlike Hex/Text which only show for ASCII-ish leaves).
+            //
+            this.btnTemplateMode.Dock = System.Windows.Forms.DockStyle.Right;
+            this.btnTemplateMode.Width = 50;
+            this.btnTemplateMode.Name = "btnTemplateMode";
+            this.btnTemplateMode.Text = "Template";
+            this.btnTemplateMode.Visible = false;
+            this.btnTemplateMode.UseDisableColor = true;
+            this.btnTemplateMode.UseVisualStyleBackColor = true;
+            //
+            // templateBuilderPane (Dock.Fill) — 23-07 Tier-B hex-driven builder; hidden until Template mode
+            //
+            this.templateBuilderPane.Dock = System.Windows.Forms.DockStyle.Fill;
+            this.templateBuilderPane.Name = "templateBuilderPane";
+            this.templateBuilderPane.Visible = false;
             //
             // txtHex — editable hex view (Consolas 9pt monospace; ShortcutsEnabled = false)
             //
@@ -318,6 +345,8 @@ namespace TJT.UI.Forms
         private UtinniCoreDotNet.UI.Controls.UtinniLabel lblLeafHeader;
         private UtinniCoreDotNet.UI.Controls.UtinniButton btnHexMode;
         private UtinniCoreDotNet.UI.Controls.UtinniButton btnTextMode;
+        private UtinniCoreDotNet.UI.Controls.UtinniButton btnTemplateMode;
+        private TJT.UI.Controls.TemplateBuilderPane templateBuilderPane;
         private System.Windows.Forms.TextBox txtHex;
         private UtinniCoreDotNet.UI.Controls.UtinniTextbox txtText;
         private System.Windows.Forms.Panel pnlStatus;

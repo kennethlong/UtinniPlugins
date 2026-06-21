@@ -34,6 +34,7 @@ using TJT.UI.Controls;
 using UtinniCore.Utinni;
 using UtinniCoreDotNet.Editing;
 using UtinniCoreDotNet.Formats.Iff;
+using UtinniCoreDotNet.Formats.Template;
 using UtinniCoreDotNet.Formats.Tre;
 using UtinniCoreDotNet.PluginFramework;
 using UtinniCoreDotNet.Saving;
@@ -81,6 +82,19 @@ namespace TJT.UI.Forms
         private MutableIffNode currentLeaf;
         // Tracks which pane (hex vs text) is visible for the current leaf.
         private bool textModeActive;
+
+        // 23-07: tracks whether the Tier-B Template builder pane is the active mode for the current leaf.
+        // Mutually exclusive with the hex/text panes (only one Fill child is Visible at a time).
+        private bool templateModeActive;
+
+        // 23-07: the loaded template pack allow-list (D-12) the resolver matches against. Loaded lazily +
+        // guarded so a missing/throwing pack dir never breaks the editor (the pane just shows raw bytes).
+        private List<TemplateModel> loadedTemplates;
+        // The in-progress / auto-applied template for the current leaf (the D-01 JSON artifact under edit).
+        private TemplateModel currentTemplate;
+        // The authoring-local undo stack (template-SHAPE edits) — SEPARATE from the IffEditController
+        // document/value stack (UI-SPEC "Undo stack decision": two stacks, clear boundary).
+        private readonly Stack<List<FieldRecord>> templateAuthoringUndo = new Stack<List<FieldRecord>>();
 
         // Friendly display name for the loaded document (used in the Saved <name> (<mode>) status
         // copy + the editor window title). Set on open; cleared on close-document.
@@ -184,6 +198,13 @@ namespace TJT.UI.Forms
             txtText.Leave += OnTextLeaveCommit;
             btnHexMode.Click += (s, e) => SetTextMode(false);
             btnTextMode.Click += (s, e) => SetTextMode(true);
+
+            // 23-07: Template mode toggle + the builder pane's assign-field context menu + inline-value
+            // commit hook. The pane owns NO format logic — these handlers bridge it to the engine + the
+            // existing IffEditController.
+            btnTemplateMode.Click += (s, e) => SetTemplateMode(true);
+            BuildTemplateAssignMenu();
+            templateBuilderPane.FieldValueCommitRequested += OnTemplateFieldValueCommit;
 
             // Leaf payload context menu (D-04.2) — Replace bytes from file / Export bytes to file.
             BuildLeafContextMenu();
@@ -402,8 +423,10 @@ namespace TJT.UI.Forms
             lblLeafHeader.ForeColor = Colors.FontDisabled();
             txtHex.Visible = false;
             txtText.Visible = false;
+            templateBuilderPane.Visible = false;
             btnHexMode.Visible = false;
             btnTextMode.Visible = false;
+            btnTemplateMode.Visible = false;
             txtHex.ContextMenuStrip = null;
             txtText.ContextMenuStrip = null;
         }
@@ -416,8 +439,10 @@ namespace TJT.UI.Forms
             lblLeafHeader.ForeColor = Colors.Font();
             txtHex.Visible = false;
             txtText.Visible = false;
+            templateBuilderPane.Visible = false;
             btnHexMode.Visible = false;
             btnTextMode.Visible = false;
+            btnTemplateMode.Visible = false;
             txtHex.ContextMenuStrip = null;
             txtText.ContextMenuStrip = null;
         }
@@ -438,20 +463,132 @@ namespace TJT.UI.Forms
 
             // Default mode = Hex; ASCII-ish payloads can toggle to Text.
             textModeActive = false;
+            templateModeActive = false;
             txtHex.ReadOnly = false;
             txtHex.Text = HexDump(payload);
             txtText.Text = ascii ? Encoding.ASCII.GetString(payload) : "";
             txtHex.Visible = true;
             txtText.Visible = false;
+            templateBuilderPane.Visible = false;
+
+            // 23-07: surface the Template-mode toggle + auto-apply (D-05 altitude / D-07 fit). The toggle
+            // is ALWAYS visible when a leaf is selected, EXCEPT when a built-in decoder claims the root FORM
+            // (then it disables with the altitude tooltip). Auto-apply may flip the leaf into Template mode.
+            ConfigureTemplateModeForLeaf(leaf, payload);
         }
 
-        // Switch between hex-edit and text-edit modes for the current leaf.
+        // 23-07: decides the Template toggle's enabled/visible state for the just-selected leaf and runs
+        // the auto-apply surfacing (Interaction 3). Guarded end-to-end: a missing pack dir / resolver hiccup
+        // never breaks leaf selection — the leaf simply opens in Hex with the toggle available.
+        private void ConfigureTemplateModeForLeaf(MutableIffNode leaf, byte[] payload)
+        {
+            btnTemplateMode.Visible = true;
+            currentTemplate = null;
+            templateAuthoringUndo.Clear();
+
+            TemplateResolution resolution = null;
+            try
+            {
+                EnsureTemplatesLoaded();
+                string leafStableId = DeriveStableIdForNode(leaf);
+                if (leafStableId != null)
+                {
+                    var resolver = new TemplateResolver(loadedTemplates);
+                    resolution = resolver.Resolve(document, leafStableId);
+                }
+            }
+            catch
+            {
+                resolution = null; // fail-open to raw hex
+            }
+
+            // Built-in-claimed file → disable the toggle with the altitude tooltip (D-05).
+            if (resolution != null && resolution.SuppressedByBuiltin)
+            {
+                btnTemplateMode.Enabled = false;
+                toolTip.SetToolTip(btnTemplateMode,
+                    "This file is decoded by a built-in editor — templates apply only to chunks Utinni doesn't recognize.");
+                return;
+            }
+
+            btnTemplateMode.Enabled = true;
+            toolTip.SetToolTip(btnTemplateMode, "");
+
+            if (resolution == null || resolution.Candidates == null || resolution.Candidates.Count == 0)
+            {
+                return; // no template — stay in Hex; the user can start one via Template mode
+            }
+
+            // Genuine multi-match tie → the small picker (most-specific pre-selected).
+            if (resolution.Candidates.Count > 1 && resolution.Best == null)
+            {
+                TemplateModel picked = ShowMultiMatchPicker(resolution.Candidates, leaf);
+                if (picked != null)
+                {
+                    currentTemplate = CloneTemplate(picked);
+                    SetTemplateMode(true);
+                }
+                return;
+            }
+
+            TemplateMatch best = resolution.Best;
+            if (best == null) return;
+
+            currentTemplate = CloneTemplate(best.Template);
+            if (best.Fits)
+            {
+                // Green FitReport → open Template mode silently (auto-apply).
+                SetTemplateMode(true);
+            }
+            else
+            {
+                // Key-match-but-no-round-trip → open Template mode with the red does-not-fit flag (the pane
+                // renders the red indicator itself off the FitReport).
+                SetTemplateMode(true);
+            }
+        }
+
+        // Switch between hex-edit and text-edit modes for the current leaf. Leaving Template mode for
+        // Hex/Text just hides the builder pane (the in-progress template stays in currentTemplate).
         private void SetTextMode(bool textMode)
         {
             if (currentLeaf == null) return;
+            templateModeActive = false;
+            templateBuilderPane.Visible = false;
             textModeActive = textMode;
             txtHex.Visible = !textMode;
             txtText.Visible = textMode;
+        }
+
+        // 23-07: enter (or leave) the Tier-B Template builder mode for the current leaf. Mode commits on
+        // Leave/Validating (never per-keystroke) per the existing per-mode rule; entering binds the leaf
+        // payload + the in-progress template into the pane and runs the headless decode/fit-check.
+        private void SetTemplateMode(bool on)
+        {
+            if (currentLeaf == null) return;
+            if (on && !btnTemplateMode.Enabled) return; // built-in-claimed leaf
+            templateModeActive = on;
+            if (on)
+            {
+                if (currentTemplate == null)
+                {
+                    currentTemplate = new TemplateModel
+                    {
+                        Version = 1,
+                        MatchLeafTag = currentLeaf.TypeId != null ? currentLeaf.TypeId.TrimEnd() : null,
+                        Fields = new List<FieldRecord>(),
+                    };
+                }
+                templateBuilderPane.SetPayload(currentLeaf.GetPayloadCopy(), currentTemplate);
+                templateBuilderPane.Visible = true;
+                txtHex.Visible = false;
+                txtText.Visible = false;
+            }
+            else
+            {
+                templateBuilderPane.Visible = false;
+                txtHex.Visible = true;
+            }
         }
 
         // Heuristic: a payload is "ASCII-ish" if >=80% of bytes are printable ASCII or common
@@ -1692,6 +1829,306 @@ namespace TJT.UI.Forms
                 if (editor != null) return editor;
             }
             return null;
+        }
+
+        // ─────────────────────────────────────────────────────────────────────
+        // 23-07: Tier-B Template builder wiring (D-02 / D-16) — select→assign,
+        // field-list edits, value commit through IffEditController, auto-apply.
+        // The pane owns NO format logic; these handlers bridge it to the engine.
+        // ─────────────────────────────────────────────────────────────────────
+
+        private UtinniContextMenuStrip templateAssignMenu;
+        private ToolStripMenuItem miAssignField;
+        private ToolStripMenuItem miRemoveField;
+        private ToolStripMenuItem miMoveFieldUp;
+        private ToolStripMenuItem miMoveFieldDown;
+
+        // The "Assign type & name…" context menu (Interaction 1) + the field-row structural ops
+        // (Interaction 2: Remove / Move up / Move down — mirroring the tree's verbs so muscle memory
+        // transfers). Installed on the builder pane's raw-byte grid.
+        private void BuildTemplateAssignMenu()
+        {
+            templateAssignMenu = new UtinniContextMenuStrip();
+            miAssignField = new ToolStripMenuItem("Assign type & name…");
+            miAssignField.Click += OnAssignFieldClick;
+            miRemoveField = new ToolStripMenuItem("Remove field");
+            miRemoveField.Click += OnRemoveFieldClick;
+            miMoveFieldUp = new ToolStripMenuItem("Move field up");
+            miMoveFieldUp.Click += (s, e) => MoveSelectedField(-1);
+            miMoveFieldDown = new ToolStripMenuItem("Move field down");
+            miMoveFieldDown.Click += (s, e) => MoveSelectedField(+1);
+            templateAssignMenu.Items.AddRange(new ToolStripItem[]
+            {
+                miAssignField,
+                new ToolStripSeparator(),
+                miRemoveField, miMoveFieldUp, miMoveFieldDown,
+            });
+            templateBuilderPane.ByteGrid.ContextMenuStrip = templateAssignMenu;
+        }
+
+        // Interaction 1: right-click a byte selection → "Assign type & name…" → the small Assign-field
+        // modal → on accept append a FieldRecord (file byte order), the pane boxes the span + adds the row
+        // + re-runs decode+FitReport. Offsets are SELECTIONS, not arithmetic (D-02).
+        private void OnAssignFieldClick(object sender, EventArgs e)
+        {
+            if (currentLeaf == null || !templateModeActive) return;
+            if (!templateBuilderPane.CaptureSelection())
+            {
+                lblStatus.Text = "Select a run of bytes in the grid first, then assign a type.";
+                lblStatus.ForeColor = Color.Red;
+                return;
+            }
+            using (var dlg = new FormAssignFieldDialog(templateBuilderPane.SelectionLength))
+            {
+                if (dlg.ShowDialog(this) != DialogResult.OK || dlg.Result == null) return;
+                PushTemplateAuthoringUndo();
+                templateBuilderPane.AppendField(dlg.Result);
+                currentTemplate = templateBuilderPane.Template;
+            }
+        }
+
+        // Interaction 2: remove the selected field row.
+        private void OnRemoveFieldClick(object sender, EventArgs e)
+        {
+            string name = templateBuilderPane.SelectedFieldName();
+            if (name == null || currentTemplate == null || currentTemplate.Fields == null) return;
+            PushTemplateAuthoringUndo();
+            var kept = new List<FieldRecord>();
+            bool removed = false;
+            foreach (FieldRecord f in currentTemplate.Fields)
+            {
+                if (!removed && f != null && f.Name == name) { removed = true; continue; }
+                kept.Add(f);
+            }
+            templateBuilderPane.ReplaceFields(kept);
+            currentTemplate = templateBuilderPane.Template;
+        }
+
+        // Interaction 2: reorder the selected field row by delta (-1 up / +1 down).
+        private void MoveSelectedField(int delta)
+        {
+            string name = templateBuilderPane.SelectedFieldName();
+            if (name == null || currentTemplate == null || currentTemplate.Fields == null) return;
+            List<FieldRecord> fields = currentTemplate.Fields;
+            int idx = -1;
+            for (int i = 0; i < fields.Count; i++)
+            {
+                if (fields[i] != null && fields[i].Name == name) { idx = i; break; }
+            }
+            if (idx < 0) return;
+            int target = idx + delta;
+            if (target < 0 || target >= fields.Count) return;
+            PushTemplateAuthoringUndo();
+            FieldRecord moved = fields[idx];
+            fields.RemoveAt(idx);
+            fields.Insert(target, moved);
+            templateBuilderPane.ReplaceFields(fields);
+            currentTemplate = templateBuilderPane.Template;
+        }
+
+        // Interaction 2: an inline value edit commits as a DOCUMENT edit through the EXISTING
+        // IffEditController (Ctrl+Z/Y ride it for free). The leaf is decoded through its template, the named
+        // scalar is coerced + overwritten, then re-encoded via KernelCodec.Encode and applied via
+        // EditLeafPayload. Surfaces the D-10 length-changing feedback when the payload size changed.
+        private void OnTemplateFieldValueCommit(object sender, FieldValueCommitEventArgs e)
+        {
+            if (currentLeaf == null || currentTemplate == null || controller == null) return;
+            try
+            {
+                byte[] before = currentLeaf.GetPayloadCopy();
+                DecodedTemplate decoded = KernelCodec.Decode(currentTemplate, before);
+                if (decoded == null || decoded.Values == null ||
+                    !decoded.Values.ContainsKey(e.FieldName))
+                {
+                    return;
+                }
+                object coerced = CoerceScalar(currentTemplate, e.FieldName, e.NewText, decoded.Values[e.FieldName]);
+                if (coerced == null) return;
+                decoded.Values[e.FieldName] = coerced;
+                byte[] after = KernelCodec.Encode(decoded);
+                if (BytesEqual(before, after)) return;
+                controller.Apply(IffEditCommands.EditLeafPayload(currentLeaf, after));
+                if (before.Length != after.Length)
+                {
+                    templateBuilderPane.ShowLengthChangeFeedback(before.Length, after.Length);
+                }
+                // Re-bind the pane to the edited bytes so the grid + rows + indicator reflect the commit.
+                templateBuilderPane.SetPayload(currentLeaf.GetPayloadCopy(), currentTemplate);
+            }
+            catch (Exception ex)
+            {
+                lblStatus.Text = "Value edit failed: " + ex.Message + " Your edits are kept in the editor.";
+                lblStatus.ForeColor = Color.Red;
+            }
+        }
+
+        // Coerces the user's typed text to the field's decoded CLR type (long/double/string). Returns null
+        // when the text is not parseable for the type (the edit is then ignored — no document mutation).
+        private static object CoerceScalar(TemplateModel template, string fieldName, string text, object current)
+        {
+            if (current is long)
+            {
+                long v;
+                return long.TryParse((text ?? "").Trim(), System.Globalization.NumberStyles.Integer,
+                    System.Globalization.CultureInfo.InvariantCulture, out v) ? (object)v : null;
+            }
+            if (current is double)
+            {
+                double v;
+                return double.TryParse((text ?? "").Trim(), System.Globalization.NumberStyles.Float,
+                    System.Globalization.CultureInfo.InvariantCulture, out v) ? (object)v : null;
+            }
+            if (current is float)
+            {
+                float v;
+                return float.TryParse((text ?? "").Trim(), System.Globalization.NumberStyles.Float,
+                    System.Globalization.CultureInfo.InvariantCulture, out v) ? (object)v : null;
+            }
+            if (current is string)
+            {
+                return text ?? "";
+            }
+            // byte[] / struct / array inline edit is not supported via the simple text box (deferred).
+            return null;
+        }
+
+        // Snapshots the current template field list onto the authoring-local undo stack (template-SHAPE
+        // edits — SEPARATE from the IffEditController document stack per the UI-SPEC undo decision).
+        private void PushTemplateAuthoringUndo()
+        {
+            if (currentTemplate == null || currentTemplate.Fields == null) return;
+            templateAuthoringUndo.Push(new List<FieldRecord>(currentTemplate.Fields));
+        }
+
+        // Loads the D-12 scanned pack allow-list once (guarded). A throwing/empty pack dir yields an empty
+        // list so the resolver simply finds no match (the leaf opens raw) — never breaks the editor.
+        private void EnsureTemplatesLoaded()
+        {
+            if (loadedTemplates != null) return;
+            try
+            {
+                var store = TemplatePackStore.DefaultRoots(null);
+                loadedTemplates = new List<TemplateModel>(store.LoadEffective());
+            }
+            catch
+            {
+                loadedTemplates = new List<TemplateModel>();
+            }
+        }
+
+        // Derives the stable-id path for a node by walking up its parent chain (the same ordinal-path
+        // scheme MutableIffDocument.DeriveStableId / TemplateResolver use — no new addressing). Returns null
+        // when the node is not reachable from the document root.
+        private string DeriveStableIdForNode(MutableIffNode node)
+        {
+            if (node == null || document == null) return null;
+            foreach (KeyValuePair<string, string> kv in TemplateResolver.EnumerateLeafStableIds(document))
+            {
+                MutableIffNode found = FindNodeByStableId(kv.Key);
+                if (object.ReferenceEquals(found, node)) return kv.Key;
+            }
+            return null;
+        }
+
+        // Resolves a stable-id back to its node via the document tree (mirrors the resolver's private walk).
+        private MutableIffNode FindNodeByStableId(string stableId)
+        {
+            if (document == null || document.Root == null || stableId == null) return null;
+            string rootId = MutableIffDocument.DeriveStableId(document.Root, "", 0);
+            if (rootId == stableId) return document.Root;
+            return FindNodeRecursive(document.Root, rootId + "/", stableId);
+        }
+
+        private static MutableIffNode FindNodeRecursive(MutableIffNode node, string idPrefix, string target)
+        {
+            IReadOnlyList<MutableIffNode> children = node.Children;
+            for (int i = 0; i < children.Count; i++)
+            {
+                MutableIffNode c = children[i];
+                string cid = MutableIffDocument.DeriveStableId(c, idPrefix, i);
+                if (cid == target) return c;
+                if (c.Kind == MutableIffNodeKind.Container)
+                {
+                    MutableIffNode hit = FindNodeRecursive(c, cid + "/", target);
+                    if (hit != null) return hit;
+                }
+            }
+            return null;
+        }
+
+        // The genuine multi-match picker (Interaction 3 / UI-SPEC §Copywriting "More than one template
+        // matches"). Most-specific key pre-selected. Returns the chosen template, or null on Cancel.
+        private TemplateModel ShowMultiMatchPicker(List<TemplateMatch> candidates, MutableIffNode leaf)
+        {
+            string tag = leaf != null && leaf.TypeId != null ? leaf.TypeId.TrimEnd() : "this chunk";
+            using (var dlg = new UtinniCoreDotNet.UI.Forms.UtinniForm())
+            {
+                dlg.Text = "More than one template matches";
+                dlg.DrawName = true;
+                dlg.MinimizeBox = false;
+                dlg.MaximizeBox = false;
+                dlg.ClientSize = new Size(420, 260);
+                dlg.StartPosition = FormStartPosition.CenterParent;
+
+                var lbl = new UtinniCoreDotNet.UI.Controls.UtinniLabel
+                {
+                    Text = candidates.Count + " templates claim " + tag + ". Pick one to apply:",
+                    Left = 12, Top = 40, Width = 396, Height = 20, ForeColor = Colors.Font(),
+                };
+                var list = new ListBox
+                {
+                    Left = 12, Top = 64, Width = 396, Height = 140,
+                    BackColor = Colors.PrimaryHighlight(), ForeColor = Colors.Font(),
+                    BorderStyle = BorderStyle.FixedSingle,
+                };
+                foreach (TemplateMatch m in candidates)
+                {
+                    string label = (m.Template != null ? (m.Template.MatchAncestorPath ?? "(tag-only)") : "?")
+                        + " · " + (m.Template != null ? m.Template.MatchLeafTag : "?")
+                        + (m.Fits ? " · fits" : " · does not fit");
+                    list.Items.Add(label);
+                }
+                if (list.Items.Count > 0) list.SelectedIndex = 0; // most-specific pre-selected (Best-first)
+
+                var btnApply = new UtinniCoreDotNet.UI.Controls.UtinniButton
+                {
+                    Text = "Apply", Left = 258, Top = 214, Width = 70,
+                    UseDisableColor = true, UseVisualStyleBackColor = true,
+                };
+                btnApply.Click += (s, e) => { dlg.DialogResult = DialogResult.OK; dlg.Close(); };
+                var btnCancel = new UtinniCoreDotNet.UI.Controls.UtinniButton
+                {
+                    Text = "Cancel", Left = 338, Top = 214, Width = 70,
+                    UseDisableColor = true, UseVisualStyleBackColor = true,
+                };
+                btnCancel.Click += (s, e) => { dlg.DialogResult = DialogResult.Cancel; dlg.Close(); };
+                dlg.Controls.Add(lbl);
+                dlg.Controls.Add(list);
+                dlg.Controls.Add(btnApply);
+                dlg.Controls.Add(btnCancel);
+                dlg.AcceptButton = btnApply;
+                dlg.CancelButton = btnCancel;
+
+                if (dlg.ShowDialog(this) != DialogResult.OK) return null;
+                int sel = list.SelectedIndex;
+                if (sel < 0 || sel >= candidates.Count) return null;
+                return candidates[sel].Template;
+            }
+        }
+
+        // Deep-ish clone of a template so authoring edits never mutate the shared pack-loaded instance.
+        // Round-trips through the JSON serializer (the SAME D-01 artifact) — no hand-rolled field copy.
+        private static TemplateModel CloneTemplate(TemplateModel source)
+        {
+            if (source == null) return null;
+            try
+            {
+                return TemplateJson.Deserialize(TemplateJson.Serialize(source));
+            }
+            catch
+            {
+                return source; // worst case, share the instance (still functional; rare)
+            }
         }
 
         private void FormIffEditor_FormClosing(object sender, FormClosingEventArgs e)

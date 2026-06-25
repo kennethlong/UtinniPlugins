@@ -48,17 +48,23 @@ namespace TJT.SWG
 
         private void OnInstallCallback()
         {
+            // Phase 24 v4: GetDirectoryInfo returns null when the directory is absent (an empty
+            // Repository -- e.g. the advertised client before the treefile subsystem is unlocked).
+            // Degrade to an empty scene list instead of dereferencing null.
             var dirInfo = Game.Repository.GetDirectoryInfo("terrain");
 
             List<string> terrains = new List<string>();
 
-            for (int i = 0; i < dirInfo.Size; i++)
+            if (dirInfo != null)
             {
-                string terrainFile = Game.Repository.GetFilenameAt(dirInfo.StartIndex + i);
-
-                if (terrainFile.EndsWith(".trn"))
+                for (int i = 0; i < dirInfo.Size; i++)
                 {
-                    terrains.Add(terrainFile);
+                    string terrainFile = Game.Repository.GetFilenameAt(dirInfo.StartIndex + i);
+
+                    if (terrainFile.EndsWith(".trn"))
+                    {
+                        terrains.Add(terrainFile);
+                    }
                 }
             }
 

@@ -134,7 +134,14 @@ namespace TJT.UI.Forms
                 await Task.Delay(1);
             }
 
+            // Phase 24 v4: GetDirectoryInfo returns null for an absent directory (empty Repository,
+            // e.g. the advertised client before the treefile subsystem is unlocked) -> empty browser.
             var dirInfo = Game.Repository.GetDirectoryInfo("object");
+
+            if (dirInfo == null)
+            {
+                return;
+            }
 
             for (int i = 0; i < dirInfo.Size; i++)
             {

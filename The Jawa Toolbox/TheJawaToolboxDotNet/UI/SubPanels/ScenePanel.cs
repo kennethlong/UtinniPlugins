@@ -99,8 +99,13 @@ namespace TJT.UI.SubPanels
             {
                 cmbScenes.SelectedIndex = index;
             }
-            else
+            else if (cmbScenes.Items.Count > 0)
             {
+                // Phase 24 v4: only select index 0 when the combo actually has items. An empty
+                // terrain list (advertised client before the treefile subsystem is unlocked ->
+                // empty Repository) made SelectedIndex=0 throw ArgumentOutOfRangeException, which
+                // escaped to native and tripped the engine's fatal handler before the dispatcher
+                // was hardened to contain it.
                 cmbScenes.SelectedIndex = 0;
             }
 

@@ -76,17 +76,22 @@ namespace TJT.SWG
 
         private void OnInstallCallback()
         {
+            // Phase 24 v4: null-safe -- GetDirectoryInfo returns null for an absent directory
+            // (empty Repository, e.g. the advertised client pre-treefile). Degrade to empty.
             var dirInfo = Game.Repository.GetDirectoryInfo("snapshot");
 
             List<string> snapshots = new List<string>();
 
-            for (int i = 0; i < dirInfo.Size; i++)
+            if (dirInfo != null)
             {
-                string snapshotFile = Game.Repository.GetFilenameAt(dirInfo.StartIndex + i);
-
-                if (snapshotFile.EndsWith(".ws"))
+                for (int i = 0; i < dirInfo.Size; i++)
                 {
-                    snapshots.Add(Path.GetFileNameWithoutExtension(snapshotFile));
+                    string snapshotFile = Game.Repository.GetFilenameAt(dirInfo.StartIndex + i);
+
+                    if (snapshotFile.EndsWith(".ws"))
+                    {
+                        snapshots.Add(Path.GetFileNameWithoutExtension(snapshotFile));
+                    }
                 }
             }
 

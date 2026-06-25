@@ -202,8 +202,10 @@ namespace TJT.UI.SubPanels
             {
                 cmbSnapshots.SelectedIndex = index;
             }
-            else
+            else if (cmbSnapshots.Items.Count > 0)
             {
+                // Phase 24 v4: guard against an empty snapshot list (advertised client pre-treefile
+                // -> empty Repository); SelectedIndex=0 on an empty combo throws.
                 cmbSnapshots.SelectedIndex = 0;
             }
         }

@@ -107,10 +107,14 @@ namespace TJT.Saving
                 case ReloadTier.ReloadedTerrain:
                     GameCallbacks.AddMainLoopCall(() =>
                     {
-                        // Round-2 MEDIUM 7 (cursor N-M2): INSTANCE ThisCall. The bare static
-                        // form is bound nowhere and would no-op silently if used. Verified
-                        // call-site analog: SWG/GroundSceneImpl.cs Reload().
-                        GroundScene.Get().ReloadTerrain();
+                        // WS-4 (advertised-client editor unlock): route through the native
+                        // utinni_reloadCurrentTerrain export instead of GroundScene.Get().ReloadTerrain().
+                        // On the advertised DX11 client GroundScene.Get() is nullptr by design (so dormant
+                        // Tier-2 editor loops stay asleep); the export reloads via a per-frame latched
+                        // instance and no-ops if no scene is loaded -- so this never NREs on the unguarded
+                        // main-loop drain. On SWGEmu it resolves the real singleton (functionally identical
+                        // to the previous GroundScene.Get().ReloadTerrain() call).
+                        UtinniCoreDotNet.Utility.Native.ReloadCurrentTerrain();
                     });
                     return ReloadTier.ReloadedTerrain;
 

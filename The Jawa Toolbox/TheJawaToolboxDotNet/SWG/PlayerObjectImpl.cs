@@ -50,6 +50,16 @@ namespace TJT.SWG
         private void OnSetupSceneCallback()
         {
             playerPanel.UpdateSceneAvailability(true);
+
+            // WS-1: on the advertised client the native player-state accessors (GetSpeed etc.) are
+            // RVA-guarded to a degraded 0 (no player-state API there yet), so these poll loops --
+            // UpdateSpeed waits for GetSpeed() > 0f, UpdateCellName for a player object -- would never
+            // exit and spin an async task forever. Skip them on the advertised client; the scene-
+            // availability refresh above (the WS-1 notify goal) still runs. Revisit when player state
+            // is advertised. This fires on the consumer-side scene-change shim (game.cpp hkMainLoop).
+            if (UtinniCoreDotNet.Utility.Native.IsAdvertisedClient())
+                return;
+
             Task updateSpeed = UpdateSpeed();
             Task updateCellNames = UpdateCellName();
         }

@@ -41,6 +41,7 @@ using System.Windows.Forms;
 using TJT.Saving;
 using TJT.UI.Controls;
 using UtinniCore.Utinni;
+using UtinniCoreDotNet.Callbacks;
 using UtinniCoreDotNet.Formats.Iff;
 using UtinniCoreDotNet.Formats.Particle;
 using UtinniCoreDotNet.Formats.Tre;
@@ -107,6 +108,13 @@ namespace TJT.UI.Forms
         // Friendly display name + last-saved path for the loaded document.
         private string displayName;
         private string lastSavedPath;
+
+        // B6 (Bucket B): the TRE-relative logical name of the loaded .prt (e.g.
+        // "appearance/pt_smoke.prt") when opened from the TRE Browser. This is the name the
+        // engine matches live particle instances by (Appearance::getAppearanceTemplateName()),
+        // so it is what the Preview-in-client hot-retrigger hands the native seam. Null for
+        // loose/unknown opens (then ResolveAppearanceLogicalName() falls back to the path).
+        private string treLogicalName;
 
         // Save▾ drop-down state (modes 1/2/4 via ParticleSaveTargets; mode 3 disabled CF-03).
         private UtinniContextMenuStrip saveMenu;
@@ -330,6 +338,8 @@ namespace TJT.UI.Forms
             this.Source = source ?? OpenSource.Unknown.Instance;
             this.displayName = displayName;
             this.lastSavedPath = (source is OpenSource.LooseFile lf) ? lf.Path : null;
+            // Reset the TRE logical name; OpenFromTreEntry re-sets it from the real logicalPath.
+            this.treLogicalName = null;
 
             undoStack.Clear();
             redoStack.Clear();
@@ -380,6 +390,9 @@ namespace TJT.UI.Forms
                 OpenSource src = TreRecordIndexResolver.ResolveOrUnknown(resolvedArchivePath, archiveLocalOffset, logicalPath);
                 string name = logicalPath != null ? Path.GetFileName(logicalPath) : Path.GetFileName(resolvedArchivePath ?? "");
                 LoadDocument(parsed, src, name);
+                // Retain the full TRE-relative logical path for the live-retrigger match (LoadDocument
+                // reset it to null above). This is the engine's appearance-template name for the .prt.
+                this.treLogicalName = logicalPath;
             }
             catch (Exception ex)
             {
@@ -702,16 +715,39 @@ namespace TJT.UI.Forms
 
         // ── Preview in client (D-09 hot-retrigger — state-encoded, honest candor) ──
 
-        // The 15-03 spike found NO reachable native hot-retrigger hook this phase (the ParticlePreview
-        // seam returns NotReachable / isRetriggerAvailable() == false). So the button is enabled ONLY
-        // when Game.IsRunning AND the hook is reachable — which is false this phase — and the reload
-        // badge degrades to the LOCKED tier-(b) candor. When a real hook lands behind that seam (15-08+),
-        // flipping IsRetriggerHookReachable() to read the native predicate enables the live-capable path.
+        // Bucket B (Phase 24 / v7): the native hot-retrigger hook is now wired. On the advertised
+        // client the ParticlePreview seam resolves particlePreview::retrigger and IsRetriggerAvailable
+        // returns true once a scene is safe to touch; on SWGEmu / pre-v7 it stays false and the reload
+        // badge degrades to the LOCKED tier-(b) candor. This single seam means the button logic below is
+        // unchanged — it just reads the real native predicate now.
         private static bool IsRetriggerHookReachable()
         {
-            // 15-03: the native ParticlePreview.isRetriggerAvailable() returns false this phase. Kept as a
-            // single seam so 15-08 can wire the real native predicate without touching the button logic.
-            return false;
+            // The native predicate (ParticlePreview.IsRetriggerAvailable) is a P/Invoke into UtinniCore.dll
+            // that throws when TJT runs without an injected client; mirror the defensive Game.IsRunning
+            // pattern used throughout this form and degrade to false on any failure.
+            try { return ParticlePreview.IsRetriggerAvailable; }
+            catch { return false; }
+        }
+
+        // The appearance-template name the engine matches live particle instances by
+        // (Appearance::getAppearanceTemplateName(), e.g. "appearance/pt_smoke.prt"). Prefers the TRE
+        // logical path captured at open (the realistic TRE-Browser path); falls back to extracting the
+        // "appearance/…" tail from the saved/loose path; returns null when neither is available, in which
+        // case the native seam degrades honestly (NotReachable) rather than retriggering the wrong name.
+        private string ResolveAppearanceLogicalName()
+        {
+            if (!string.IsNullOrEmpty(treLogicalName))
+            {
+                return treLogicalName.Replace('\\', '/');
+            }
+
+            string path = lastSavedPath;
+            if (string.IsNullOrEmpty(path) && Source is OpenSource.LooseFile lf) path = lf.Path;
+            if (string.IsNullOrEmpty(path)) return null;
+
+            string norm = path.Replace('\\', '/');
+            int idx = norm.IndexOf("/appearance/", StringComparison.OrdinalIgnoreCase);
+            return idx >= 0 ? norm.Substring(idx + 1) : null; // drop the leading slash
         }
 
         private bool PreviewAvailable()
@@ -745,8 +781,17 @@ namespace TJT.UI.Forms
                 return;
             }
 
-            // Live-capable path (reachable in 15-08+ once the native hook lands): marshal the retrigger on
-            // the game thread, heap-free per project_rh_snapshot_no_heap_alloc (marshal once per preview).
+            // Live-capable path (Bucket B / v7): marshal the retrigger onto the game thread, heap-free per
+            // project_rh_snapshot_no_heap_alloc (once per preview, never per frame). The native seam walks
+            // ClientEffectManager::m_particleSystems and restarts instances whose appearance-template name
+            // matches; a null/empty name degrades to NotReachable inside the seam (no wrong-name retrigger).
+            string logicalName = ResolveAppearanceLogicalName();
+            GameCallbacks.AddMainLoopCall(() =>
+            {
+                // P/Invoke into the injected client; never let a teardown race crash the editor UI.
+                try { ParticlePreview.RetriggerLiveEffectInstances(logicalName); }
+                catch { /* injected-client unavailable mid-call — honest no-op */ }
+            });
             lblStatus.Text = "Re-triggered live instance(s).";
             lblStatus.ForeColor = Colors.Font();
             PulseReloadBadge();

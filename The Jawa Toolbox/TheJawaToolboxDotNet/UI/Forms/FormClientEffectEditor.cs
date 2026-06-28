@@ -50,7 +50,8 @@ using System.Threading.Tasks;
 using System.Windows.Forms;
 using TJT.Saving;                              // ClientEffectSaveTargets
 using TJT.UI.Controls;                         // ThemedDataGridView
-using UtinniCore.Utinni;                       // Game.IsRunning (P/Invoke — ALWAYS try/catch), UtINI
+using UtinniCore.Utinni;                       // Game.IsRunning (P/Invoke — ALWAYS try/catch), ParticlePreview, UtINI
+using UtinniCoreDotNet.Callbacks;              // GameCallbacks.AddMainLoopCall (game-thread marshaling)
 using UtinniCoreDotNet.Formats.ClientEffect;   // ClientEffectDocument / MutableClientEffect / ClefFieldCodec / ClefCommandDefaults
 using UtinniCoreDotNet.Formats.Iff;            // OpenSource / MutableIffNode
 using UtinniCoreDotNet.PluginFramework;        // IEditorPlugin (undo seam)
@@ -118,6 +119,11 @@ namespace TJT.UI.Forms
         private OpenSource source;
         private string displayName;
         private string lastSavedPath;
+
+        // Bucket B-2: the TRE-relative logical name of the loaded .cef (e.g. "clienteffect/foo.cef"),
+        // captured at open. This is what the native replay seam hands ClientEffectManager::playClientEffect
+        // (CrcLowerString). Null for loose/unknown opens -> ResolveClientEffectLogicalName() falls back.
+        private string cefLogicalName;
 
         // ── Editor-local undo/redo of the WHOLE serialized CLEF (CON-M-05: independent of the scene
         //    UndoRedoManager). Each entry is a full byte snapshot — simple + correct for the small CLEF
@@ -557,6 +563,8 @@ namespace TJT.UI.Forms
                 string rel = string.IsNullOrEmpty(logicalPath) ? Path.GetFileName(archivePath ?? "") : logicalPath;
                 OpenSource src = new OpenSource.TreArchive(archivePath ?? "", 0, rel ?? "");
                 BindDocument(doc, src, rel);
+                // Retain the full TRE-relative .cef logical name for the live replay (BindDocument reset it).
+                cefLogicalName = rel;
                 SetStatus("Opened " + rel + " (read-only TRE — first save writes a loose override).", false);
             }
             catch (ClientEffectParseException ex)
@@ -661,6 +669,8 @@ namespace TJT.UI.Forms
             source = src;
             displayName = name;
             lastSavedPath = (src is OpenSource.LooseFile loose) ? loose.Path : null;
+            // Reset the TRE logical name; OpenFromTreEntry re-sets it from the real logicalPath.
+            cefLogicalName = null;
             isDirty = false;
             undoStack.Clear();
             redoStack.Clear();
@@ -1323,11 +1333,33 @@ namespace TJT.UI.Forms
         // behind the false reachability) for the future native hook (D-08).
         // ─────────────────────────────────────────────────────────────────────
 
-        // Single seam — when a real native hot-retrigger hook lands (D-08), flip this to read the native
-        // predicate; nothing else in the button logic changes (the FormParticleEditor precedent).
+        // Bucket B-2 (v8): the native .cef RE-PLAY hook is now wired. On the advertised client
+        // ParticlePreview.IsReplayAvailable resolves particlePreview::replayClientEffect and returns true
+        // once a scene is safe; on SWGEmu / pre-v8 it stays false and the editor keeps the honest degraded
+        // candor. The P/Invoke can throw outside an injected client -> try/catch -> false (the form's pattern).
         private static bool IsRetriggerHookReachable()
         {
-            return false;
+            try { return ParticlePreview.IsReplayAvailable; }
+            catch { return false; }
+        }
+
+        // The .cef logical name the native replay hands ClientEffectManager::playClientEffect
+        // (e.g. "clienteffect/foo.cef"). Prefers the TRE logical name captured at open; falls back to the
+        // "clienteffect/…" tail of the saved/loose path; null -> the seam degrades (no wrong-name play).
+        private string ResolveClientEffectLogicalName()
+        {
+            if (!string.IsNullOrEmpty(cefLogicalName))
+            {
+                return cefLogicalName.Replace('\\', '/');
+            }
+
+            string path = lastSavedPath;
+            if (string.IsNullOrEmpty(path) && source is OpenSource.LooseFile lf) path = lf.Path;
+            if (string.IsNullOrEmpty(path)) return null;
+
+            string norm = path.Replace('\\', '/');
+            int idx = norm.IndexOf("/clienteffect/", StringComparison.OrdinalIgnoreCase);
+            return idx >= 0 ? norm.Substring(idx + 1) : null; // drop the leading slash
         }
 
         private void OnPreviewClicked(object sender, EventArgs e)
@@ -1347,8 +1379,17 @@ namespace TJT.UI.Forms
                 return;
             }
 
-            // Live-capable path (reachable only once the native hook lands — D-08). Routes through the
-            // ClientReloadDispatcher (Game.IsRunning-gated, game-thread, heap-free) in a future build.
+            // Live-capable path (Bucket B-2 / v8): marshal the .cef re-play onto the game thread
+            // (heap-free, once per preview — project_rh_snapshot_no_heap_alloc). The native seam re-fetches
+            // the .cef + referenced templates (so the edit shows) and plays it fresh on the player; a
+            // null/empty name degrades inside the seam (no wrong-name play).
+            string cefName = ResolveClientEffectLogicalName();
+            GameCallbacks.AddMainLoopCall(() =>
+            {
+                // P/Invoke into the injected client; never let a teardown race crash the editor UI.
+                try { ParticlePreview.ReplayClientEffect(cefName); }
+                catch { /* injected-client unavailable mid-call — honest no-op */ }
+            });
             lblStatus.Text = PreviewLiveCapable;
             lblStatus.ForeColor = Colors.Font();
             PulseAccent();

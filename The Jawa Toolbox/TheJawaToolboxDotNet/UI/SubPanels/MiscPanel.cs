@@ -87,13 +87,13 @@ namespace TJT.UI.SubPanels
                 ForeColor = Color.WhiteSmoke,
                 Font = new Font(System.Drawing.FontFamily.GenericMonospace, 8.25f),
                 Location = new Point(3, 139),
-                Size = new Size(411, 86),
+                Size = new Size(411, 116),
                 Multiline = true,
                 ReadOnly = true,
                 Text = "Selected object: (none)"
             };
 
-            Size = new Size(417, 231);
+            Size = new Size(417, 261);
             Controls.Add(btnReadSelectedObject);
             Controls.Add(txtSelectedObject);
         }
@@ -125,8 +125,15 @@ namespace TJT.UI.SubPanels
                 var appearance = obj.SharedAppearanceFilename;
                 lines.AppendLine("Appearance: " + (string.IsNullOrEmpty(appearance) ? "(unavailable)" : appearance));
 
+                lines.AppendLine("Type:       " + FormatObjectType(obj.ObjectType));
+
                 long networkId = obj.NetworkIdValue;
                 lines.AppendLine("Network ID: " + (networkId != 0 ? "0x" + networkId.ToString("X") : "(unavailable)"));
+
+                // ParentCellName: null = outdoors / no containing cell; "" = in a cell but the name isn't
+                // safely readable on the advertised NGE client (raw-field offset, §5); else the cell name.
+                var cell = obj.ParentCellName;
+                lines.AppendLine("Cell:       " + (cell == null ? "(outdoors / none)" : (cell.Length == 0 ? "(in cell -- name n/a on advertised)" : cell)));
 
                 var transform = obj.Transform;
                 if (transform != null)
@@ -146,6 +153,32 @@ namespace TJT.UI.SubPanels
             {
                 txtSelectedObject.Text = "Read failed: " + ex.Message;
             }
+        }
+
+        // The advertised object::getObjectType returns the object's class Tag (a uint32 FOURCC, e.g.
+        // 'CREO'/'TANO'/'BUIO'). Render the big-endian ASCII tag when all four bytes are printable,
+        // always with the hex value alongside (a non-FOURCC numeric type still reads cleanly as hex).
+        private static string FormatObjectType(uint type)
+        {
+            if (type == 0)
+            {
+                return "(unavailable)";
+            }
+
+            var tag = new char[4];
+            bool printable = true;
+            for (int i = 0; i < 4; i++)
+            {
+                int b = (int)((type >> (24 - i * 8)) & 0xFF);
+                tag[i] = (char)b;
+                if (b < 0x20 || b > 0x7E)
+                {
+                    printable = false;
+                }
+            }
+
+            string hex = "0x" + type.ToString("X8");
+            return printable ? ("'" + new string(tag) + "' (" + hex + ")") : hex;
         }
 
         private void CreateSettings(UtINI ini)

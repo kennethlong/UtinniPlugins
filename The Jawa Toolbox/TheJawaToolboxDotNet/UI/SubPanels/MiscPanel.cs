@@ -35,11 +35,11 @@ namespace TJT.UI.SubPanels
         private readonly CuiImpl cui;
         private readonly MiscImpl misc;
 
-        // Bucket A-2 world-pick demo: read the HUD's currently-picked world object via the
-        // advertised CuiManager.SelectedObject getter and show its world position. Both accessors
-        // are advertised (g_instance -> getTarget; Object.Transform -> getTransform_o2w) so this
-        // is advertised-client-safe -- unlike the onTarget callback path, a pure getter wakes
-        // no editor subscriber chain (the safe way to consume world-pick).
+        // Bucket A-2 world-pick inspector: read the HUD's currently-picked world object via the
+        // advertised CuiManager.SelectedObject getter and show a multi-field readout (template name,
+        // appearance file, network id, position, yaw). Every field routes through an advertised row
+        // (see btnReadSelectedObject_Click) so this is advertised-client-safe -- unlike the onTarget
+        // callback path, a pure getter wakes no editor subscriber chain (the safe way to consume world-pick).
         private UtinniButton btnReadSelectedObject;
         private UtinniTextbox txtSelectedObject;
 
@@ -85,20 +85,27 @@ namespace TJT.UI.SubPanels
                 BackColor = Color.FromArgb(64, 64, 64),
                 BorderStyle = System.Windows.Forms.BorderStyle.FixedSingle,
                 ForeColor = Color.WhiteSmoke,
+                Font = new Font(System.Drawing.FontFamily.GenericMonospace, 8.25f),
                 Location = new Point(3, 139),
-                Size = new Size(411, 20),
+                Size = new Size(411, 86),
+                Multiline = true,
                 ReadOnly = true,
                 Text = "Selected object: (none)"
             };
 
-            Size = new Size(417, 165);
+            Size = new Size(417, 231);
             Controls.Add(btnReadSelectedObject);
             Controls.Add(txtSelectedObject);
         }
 
-        // World-pick consumer (advertised-safe getter only -- no onTarget dispatch, no editor-subscriber
-        // blast radius). CuiManager.SelectedObject -> cuiHud::g_instance -> cuiHud::getTarget (advertised);
-        // Object.Transform -> getTransform_o2w (advertised). Returns null off advertised / with no live HUD.
+        // World-pick consumer / richer inspector (advertised-safe GETTERS only -- no onTarget dispatch, no
+        // editor-subscriber blast radius). All reads route through advertised rows the resolver re-points on
+        // the advertised client: CuiManager.SelectedObject -> cuiHud::g_instance/getTarget; Object.Transform
+        // -> getTransform_o2w; ObjectTemplateName -> object::getObjectTemplateName; NetworkIdValue ->
+        // object::getNetworkId; SharedAppearanceFilename -> getObjectTemplate -> objectTemplate::
+        // getAppearanceFilename. Each native accessor null-degrades (empty/0) off the advertised client, and
+        // Yaw is pure matrix math off the same transform read -- no extra RVA. (Avoid Object.NetworkId /
+        // GetTemplateFilename / GetAppearanceFilename: those map to UNadvertised SWGEmu paths.)
         private void btnReadSelectedObject_Click(object sender, EventArgs e)
         {
             try
@@ -110,15 +117,30 @@ namespace TJT.UI.SubPanels
                     return;
                 }
 
+                var lines = new System.Text.StringBuilder();
+
+                var template = obj.ObjectTemplateName;
+                lines.AppendLine("Template:   " + (string.IsNullOrEmpty(template) ? "(unavailable)" : template));
+
+                var appearance = obj.SharedAppearanceFilename;
+                lines.AppendLine("Appearance: " + (string.IsNullOrEmpty(appearance) ? "(unavailable)" : appearance));
+
+                long networkId = obj.NetworkIdValue;
+                lines.AppendLine("Network ID: " + (networkId != 0 ? "0x" + networkId.ToString("X") : "(unavailable)"));
+
                 var transform = obj.Transform;
-                if (transform == null)
+                if (transform != null)
                 {
-                    txtSelectedObject.Text = "Selected object: picked (no transform available)";
-                    return;
+                    var pos = transform.Position;
+                    lines.AppendLine(string.Format("Position:   ({0:F1}, {1:F1}, {2:F1})", pos.X, pos.Y, pos.Z));
+                    lines.Append(string.Format("Yaw:        {0:F1} deg", transform.YawP2l));
+                }
+                else
+                {
+                    lines.Append("Position:   (no transform available)");
                 }
 
-                var pos = transform.Position;
-                txtSelectedObject.Text = string.Format("Selected object @ world ({0:F1}, {1:F1}, {2:F1})", pos.X, pos.Y, pos.Z);
+                txtSelectedObject.Text = lines.ToString();
             }
             catch (Exception ex)
             {

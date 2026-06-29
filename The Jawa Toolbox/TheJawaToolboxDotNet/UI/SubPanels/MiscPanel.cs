@@ -72,8 +72,10 @@ namespace TJT.UI.SubPanels
                 Size = new Size(130, 20),
                 Text = "Read Selected Obj",
                 UseDisableColor = true,
-                UseVisualStyleBackColor = false,
-                Enabled = false // gated on a live scene (UpdateSceneAvailability)
+                UseVisualStyleBackColor = false
+                // NOT scene-gated: CuiManager.SelectedObject is null-safe (returns null with no live HUD),
+                // and the advertised client doesn't deliver the ISceneAvailability signal to this panel
+                // (the other scene-gated buttons stay grayed there) -- so gate-free keeps it clickable.
             };
             btnReadSelectedObject.Click += btnReadSelectedObject_Click;
 
@@ -160,7 +162,8 @@ namespace TJT.UI.SubPanels
 
             btnCreateObject.Enabled = isSceneActive;
             btnCreateAppearance.Enabled = isSceneActive;
-            btnReadSelectedObject.Enabled = isSceneActive;
+            // btnReadSelectedObject is intentionally NOT scene-gated (null-safe getter; the advertised
+            // client doesn't deliver this signal here anyway).
 
             previousIsSceneActive = isSceneActive;
         }

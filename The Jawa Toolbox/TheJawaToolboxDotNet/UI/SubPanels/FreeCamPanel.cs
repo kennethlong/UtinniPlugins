@@ -45,6 +45,14 @@ namespace TJT.UI.SubPanels
             InitializeComponent();
 
             freeCamImpl = new FreeCamImpl(this, hotkeyManager);
+
+            // On the advertised client the scene-availability signal isn't delivered to panels (same as
+            // MiscPanel), so chkFreeCam would stay disabled forever. Enable the toggle from the start there --
+            // the native utinni_toggleFreeCamera is null-safe (no-op until a world is loaded + latched).
+            if (UtinniCoreDotNet.Utility.Native.IsAdvertisedClient())
+            {
+                chkFreeCam.Enabled = true;
+            }
         }
 
         private void btnTeleport_Click(object sender, EventArgs e)
@@ -76,7 +84,9 @@ namespace TJT.UI.SubPanels
                 return;
             }
 
-            chkFreeCam.Enabled = isSceneActive;
+            // Keep the toggle enabled on the advertised client even if this signal ever fires with false
+            // (it generally doesn't fire there at all -- see the constructor).
+            chkFreeCam.Enabled = isSceneActive || UtinniCoreDotNet.Utility.Native.IsAdvertisedClient();
             txtCellName.Enabled = isSceneActive;
 
             previousIsSceneActive = isSceneActive;

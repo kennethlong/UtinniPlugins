@@ -73,9 +73,34 @@ namespace TJT.SWG
 
         }
 
+        // v13 free-cam (Wave 4): on the advertised client GroundScene.Get() is null by design, so route
+        // toggle + active-state through the dedicated native exports (latch-backed). On SWGEmu these resolve
+        // the real singleton -> identical behavior (the exports null-check internally).
+        private static bool IsFreeCamActive()
+        {
+            if (UtinniCoreDotNet.Utility.Native.IsAdvertisedClient())
+            {
+                return UtinniCoreDotNet.Utility.Native.IsFreeCameraActive();
+            }
+            GroundScene gs = GroundScene.Get();
+            return gs != null && gs.IsFreeCameraActive;
+        }
+
+        private static void ToggleFreeCameraNative()
+        {
+            if (UtinniCoreDotNet.Utility.Native.IsAdvertisedClient())
+            {
+                UtinniCoreDotNet.Utility.Native.ToggleFreeCamera();
+            }
+            else
+            {
+                GroundScene.Get().ToggleFreeCamera();
+            }
+        }
+
         private void OnCameraChangeCallback()
         {
-            freeCamPanel.UpdateFreecamAvailability(GroundScene.Get().IsFreeCameraActive);
+            freeCamPanel.UpdateFreecamAvailability(IsFreeCamActive());
         }
 
         public void Teleport(float x, float y, float z)
@@ -122,7 +147,7 @@ namespace TJT.SWG
 
         public void HalfSpeed()
         {
-            if (GroundScene.Get().IsFreeCameraActive)
+            if (IsFreeCamActive())
             {
                 float value = GetSpeed() / 2;
                 SetSpeed(value);
@@ -132,7 +157,7 @@ namespace TJT.SWG
 
         public void DoubleSpeed()
         {
-            if (GroundScene.Get().IsFreeCameraActive)
+            if (IsFreeCamActive())
             {
                 float value = GetSpeed() * 2;
                 SetSpeed(value);
@@ -149,7 +174,7 @@ namespace TJT.SWG
         {
             GroundSceneCallbacks.AddUpdateLoopCall(() =>
             {
-                GroundScene.Get().ToggleFreeCamera();
+                ToggleFreeCameraNative();
             });
         }
 

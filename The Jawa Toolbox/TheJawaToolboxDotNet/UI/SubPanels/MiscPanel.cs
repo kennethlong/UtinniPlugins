@@ -42,8 +42,12 @@ namespace TJT.UI.SubPanels
         // advertised-client-safe -- unlike the onTarget callback path, a pure getter wakes no editor
         // subscriber chain (the safe way to consume world-pick). "Inspect Player" runs the same readout
         // on the player's own creature object (Game.PlayerCreatureObject, advertised) -- no click needed.
+        // "Inspect Camera" runs an advertised-safe readout on the active game camera (Game.Camera ->
+        // game::getCamera, advertised) -- position/yaw/pitch off the advertised transform chain, plus the
+        // SWGEmu-only lens fields (see RenderCameraReadout).
         private UtinniButton btnReadSelectedObject;
         private UtinniButton btnInspectPlayer;
+        private UtinniButton btnInspectCamera;
         private UtinniTextbox txtSelectedObject;
 
         public MiscPanel(UtINI ini) : base("Misc")
@@ -99,6 +103,24 @@ namespace TJT.UI.SubPanels
             };
             btnInspectPlayer.Click += btnInspectPlayer_Click;
 
+            // Second inspector row (the top row is full): a wide "Inspect Camera" button spanning under
+            // the two row-1 buttons. Same not-scene-gated rationale -- Game.Camera is a null-safe advertised
+            // getter and the advertised client never delivers ISceneAvailability here.
+            btnInspectCamera = new UtinniButton
+            {
+                Anchor = System.Windows.Forms.AnchorStyles.Top | System.Windows.Forms.AnchorStyles.Right,
+                BackColor = Color.FromArgb(0, 122, 204),
+                DrawOutline = false,
+                FlatStyle = System.Windows.Forms.FlatStyle.Popup,
+                ForeColor = Color.WhiteSmoke,
+                Location = new Point(177, 139),
+                Size = new Size(237, 20),
+                Text = "Inspect Camera",
+                UseDisableColor = true,
+                UseVisualStyleBackColor = false
+            };
+            btnInspectCamera.Click += btnInspectCamera_Click;
+
             txtSelectedObject = new UtinniTextbox
             {
                 Anchor = System.Windows.Forms.AnchorStyles.Top | System.Windows.Forms.AnchorStyles.Left | System.Windows.Forms.AnchorStyles.Right,
@@ -106,16 +128,17 @@ namespace TJT.UI.SubPanels
                 BorderStyle = System.Windows.Forms.BorderStyle.FixedSingle,
                 ForeColor = Color.WhiteSmoke,
                 Font = new Font(System.Drawing.FontFamily.GenericMonospace, 8.25f),
-                Location = new Point(3, 139),
+                Location = new Point(3, 165),
                 Size = new Size(411, 150),
                 Multiline = true,
                 ReadOnly = true,
                 Text = "Selected object: (none)"
             };
 
-            Size = new Size(417, 295);
+            Size = new Size(417, 321);
             Controls.Add(btnReadSelectedObject);
             Controls.Add(btnInspectPlayer);
+            Controls.Add(btnInspectCamera);
             Controls.Add(txtSelectedObject);
         }
 
@@ -133,6 +156,75 @@ namespace TJT.UI.SubPanels
         {
             RenderReadout("Player", Game.PlayerCreatureObject,
                 "(no player creature object -- not in a scene?)");
+        }
+
+        // Inspect the active game camera (Game.Camera -> game::getCamera, advertised). Position/Yaw/Pitch
+        // come from the advertised transform chain (getTransform_o2w + getYaw_p2l/getPitch_p2l) -> safe on
+        // every client. The lens fields (FOV / clip planes / viewport / projection) are RAW Camera
+        // struct-field reads whose offsets are fragile on the advertised NGE layout (§5), so they're read
+        // ONLY on SWGEmu and degrade to "(n/a on advertised)" on the advertised client -- same discipline
+        // as Object.ParentCellName / getParentCellName.
+        private void btnInspectCamera_Click(object sender, EventArgs e)
+        {
+            RenderCameraReadout(Game.Camera, "(no active camera -- not in a scene?)");
+        }
+
+        private void RenderCameraReadout(Camera cam, string noneMessage)
+        {
+            try
+            {
+                if (cam == null)
+                {
+                    txtSelectedObject.Text = "Camera: " + noneMessage;
+                    return;
+                }
+
+                var lines = new System.Text.StringBuilder();
+                lines.AppendLine("[Camera]");
+
+                // Advertised-safe: world position + orientation off the object-to-world transform (the
+                // same getTransform_o2w chain the object inspector uses). Yaw/Pitch are pure matrix math.
+                var transform = cam.Transform;
+                if (transform != null)
+                {
+                    var pos = transform.Position;
+                    lines.AppendLine(string.Format("Position:    ({0:F1}, {1:F1}, {2:F1})", pos.X, pos.Y, pos.Z));
+                    lines.AppendLine(string.Format("Yaw:         {0:F1} deg", transform.YawP2l));
+                    lines.AppendLine(string.Format("Pitch:       {0:F1} deg", transform.PitchP2l));
+                }
+                else
+                {
+                    lines.AppendLine("Position:    (no transform available)");
+                }
+
+                // Lens fields are raw Camera struct reads -> offset-fragile on the advertised NGE client
+                // (§5). Read them only on SWGEmu; degrade cleanly on the advertised client.
+                if (UtinniCoreDotNet.Utility.Native.IsAdvertisedClient())
+                {
+                    lines.Append("Lens:        (n/a on advertised -- raw struct fields)");
+                }
+                else
+                {
+                    // SWG stores FOV in radians (setHorizontalFieldOfView(PI_OVER_3) == 60 deg) -> show degrees.
+                    lines.AppendLine(string.Format("FOV:         {0:F1} deg h / {1:F1} deg v",
+                        RadToDeg(cam.HorizontalFieldOfView), RadToDeg(cam.VerticalFieldOfView)));
+                    lines.AppendLine(string.Format("Clip:        near {0:F2} / far {1:F1}", cam.NearPlane, cam.FarPlane));
+                    lines.AppendLine(string.Format("Viewport:    {0} x {1}", cam.ViewportWidth, cam.ViewportHeight));
+                    lines.Append("Projection:  " +
+                        (cam.ProjectionMode == Camera.ProjectionModes.PmPerspective ? "perspective" : "parallel"));
+                }
+
+                txtSelectedObject.Text = lines.ToString();
+            }
+            catch (Exception ex)
+            {
+                txtSelectedObject.Text = "Read failed: " + ex.Message;
+            }
+        }
+
+        private static float RadToDeg(float radians)
+        {
+            return radians * (180f / (float)Math.PI);
         }
 
         // Richer inspector (advertised-safe GETTERS only -- no onTarget dispatch, no editor-subscriber
@@ -263,8 +355,8 @@ namespace TJT.UI.SubPanels
 
             btnCreateObject.Enabled = isSceneActive;
             btnCreateAppearance.Enabled = isSceneActive;
-            // btnReadSelectedObject / btnInspectPlayer are intentionally NOT scene-gated (null-safe
-            // getters; the advertised client doesn't deliver this signal here anyway).
+            // btnReadSelectedObject / btnInspectPlayer / btnInspectCamera are intentionally NOT scene-gated
+            // (null-safe getters; the advertised client doesn't deliver this signal here anyway).
 
             previousIsSceneActive = isSceneActive;
         }

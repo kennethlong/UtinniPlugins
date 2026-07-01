@@ -37,10 +37,13 @@ namespace TJT.UI.SubPanels
 
         // Bucket A-2 world-pick inspector: read the HUD's currently-picked world object via the
         // advertised CuiManager.SelectedObject getter and show a multi-field readout (template name,
-        // appearance file, network id, position, yaw). Every field routes through an advertised row
-        // (see btnReadSelectedObject_Click) so this is advertised-client-safe -- unlike the onTarget
-        // callback path, a pure getter wakes no editor subscriber chain (the safe way to consume world-pick).
+        // appearance file, network id, type, cell, position, yaw, active flag, portal/client-data files).
+        // Every field routes through an advertised row (see RenderObjectReadout) so this is
+        // advertised-client-safe -- unlike the onTarget callback path, a pure getter wakes no editor
+        // subscriber chain (the safe way to consume world-pick). "Inspect Player" runs the same readout
+        // on the player's own creature object (Game.PlayerCreatureObject, advertised) -- no click needed.
         private UtinniButton btnReadSelectedObject;
+        private UtinniButton btnInspectPlayer;
         private UtinniTextbox txtSelectedObject;
 
         public MiscPanel(UtINI ini) : base("Misc")
@@ -79,6 +82,23 @@ namespace TJT.UI.SubPanels
             };
             btnReadSelectedObject.Click += btnReadSelectedObject_Click;
 
+            btnInspectPlayer = new UtinniButton
+            {
+                Anchor = System.Windows.Forms.AnchorStyles.Top | System.Windows.Forms.AnchorStyles.Right,
+                BackColor = Color.FromArgb(0, 122, 204),
+                DrawOutline = false,
+                FlatStyle = System.Windows.Forms.FlatStyle.Popup,
+                ForeColor = Color.WhiteSmoke,
+                Location = new Point(310, 113),
+                Size = new Size(104, 20),
+                Text = "Inspect Player",
+                UseDisableColor = true,
+                UseVisualStyleBackColor = false
+                // Same rationale as btnReadSelectedObject: Game.PlayerCreatureObject is a null-safe
+                // advertised getter, and the advertised client never delivers ISceneAvailability here.
+            };
+            btnInspectPlayer.Click += btnInspectPlayer_Click;
+
             txtSelectedObject = new UtinniTextbox
             {
                 Anchor = System.Windows.Forms.AnchorStyles.Top | System.Windows.Forms.AnchorStyles.Left | System.Windows.Forms.AnchorStyles.Right,
@@ -87,64 +107,90 @@ namespace TJT.UI.SubPanels
                 ForeColor = Color.WhiteSmoke,
                 Font = new Font(System.Drawing.FontFamily.GenericMonospace, 8.25f),
                 Location = new Point(3, 139),
-                Size = new Size(411, 116),
+                Size = new Size(411, 150),
                 Multiline = true,
                 ReadOnly = true,
                 Text = "Selected object: (none)"
             };
 
-            Size = new Size(417, 261);
+            Size = new Size(417, 295);
             Controls.Add(btnReadSelectedObject);
+            Controls.Add(btnInspectPlayer);
             Controls.Add(txtSelectedObject);
         }
 
-        // World-pick consumer / richer inspector (advertised-safe GETTERS only -- no onTarget dispatch, no
-        // editor-subscriber blast radius). All reads route through advertised rows the resolver re-points on
-        // the advertised client: CuiManager.SelectedObject -> cuiHud::g_instance/getTarget; Object.Transform
-        // -> getTransform_o2w; ObjectTemplateName -> object::getObjectTemplateName; NetworkIdValue ->
-        // object::getNetworkId; SharedAppearanceFilename -> getObjectTemplate -> objectTemplate::
-        // getAppearanceFilename. Each native accessor null-degrades (empty/0) off the advertised client, and
-        // Yaw is pure matrix math off the same transform read -- no extra RVA. (Avoid Object.NetworkId /
-        // GetTemplateFilename / GetAppearanceFilename: those map to UNadvertised SWGEmu paths.)
+        // World-pick: inspect the HUD's currently-picked world object (CuiManager.SelectedObject ->
+        // cuiHud::g_instance/getTarget, advertised).
         private void btnReadSelectedObject_Click(object sender, EventArgs e)
+        {
+            RenderReadout("Selected object", CuiManager.SelectedObject,
+                "(none -- nothing picked, or no live HUD)");
+        }
+
+        // Inspect the player's own avatar (Game.PlayerCreatureObject, advertised) -- no in-world click
+        // needed. Same advertised-safe getter chain as world-pick, run on the creature object.
+        private void btnInspectPlayer_Click(object sender, EventArgs e)
+        {
+            RenderReadout("Player", Game.PlayerCreatureObject,
+                "(no player creature object -- not in a scene?)");
+        }
+
+        // Richer inspector (advertised-safe GETTERS only -- no onTarget dispatch, no editor-subscriber
+        // blast radius). All reads route through advertised rows the resolver re-points on the advertised
+        // client: Object.Transform -> getTransform_o2w; ObjectTemplateName -> object::getObjectTemplateName;
+        // NetworkIdValue -> object::getNetworkId; SharedAppearanceFilename/SharedPortalLayoutFilename/
+        // SharedClientDataFilename -> getObjectTemplate -> objectTemplate::getAppearanceFilename/
+        // getPortalLayoutFilename/getClientDataFile; ObjectType -> object::getObjectType; IsActive ->
+        // object::isActive. Each native accessor null-degrades (empty/0) off the advertised client, and Yaw
+        // is pure matrix math off the same transform read -- no extra RVA. (Avoid Object.NetworkId /
+        // GetTemplateFilename / GetAppearanceFilename: those map to UNadvertised SWGEmu paths.)
+        private void RenderReadout(string header, UtinniCore.Utinni.Object obj, string noneMessage)
         {
             try
             {
-                var obj = CuiManager.SelectedObject;
                 if (obj == null)
                 {
-                    txtSelectedObject.Text = "Selected object: (none -- nothing picked, or no live HUD)";
+                    txtSelectedObject.Text = header + ": " + noneMessage;
                     return;
                 }
 
                 var lines = new System.Text.StringBuilder();
+                lines.AppendLine("[" + header + "]");
 
                 var template = obj.ObjectTemplateName;
-                lines.AppendLine("Template:   " + (string.IsNullOrEmpty(template) ? "(unavailable)" : template));
+                lines.AppendLine("Template:    " + (string.IsNullOrEmpty(template) ? "(unavailable)" : template));
 
                 var appearance = obj.SharedAppearanceFilename;
-                lines.AppendLine("Appearance: " + (string.IsNullOrEmpty(appearance) ? "(unavailable)" : appearance));
+                lines.AppendLine("Appearance:  " + (string.IsNullOrEmpty(appearance) ? "(unavailable)" : appearance));
 
-                lines.AppendLine("Type:       " + FormatObjectType(obj.ObjectType));
+                var portal = obj.SharedPortalLayoutFilename;
+                lines.AppendLine("Portal:      " + (string.IsNullOrEmpty(portal) ? "(none)" : portal));
+
+                var clientData = obj.SharedClientDataFilename;
+                lines.AppendLine("Client Data: " + (string.IsNullOrEmpty(clientData) ? "(none)" : clientData));
+
+                lines.AppendLine("Type:        " + FormatObjectType(obj.ObjectType));
+
+                lines.AppendLine("Active:      " + (obj.IsActive ? "yes" : "no"));
 
                 long networkId = obj.NetworkIdValue;
-                lines.AppendLine("Network ID: " + (networkId != 0 ? "0x" + networkId.ToString("X") : "(unavailable)"));
+                lines.AppendLine("Network ID:  " + (networkId != 0 ? "0x" + networkId.ToString("X") : "(unavailable)"));
 
                 // ParentCellName: null = outdoors / no containing cell; "" = in a cell but the name isn't
                 // safely readable on the advertised NGE client (raw-field offset, §5); else the cell name.
                 var cell = obj.ParentCellName;
-                lines.AppendLine("Cell:       " + (cell == null ? "(outdoors / none)" : (cell.Length == 0 ? "(in cell -- name n/a on advertised)" : cell)));
+                lines.AppendLine("Cell:        " + (cell == null ? "(outdoors / none)" : (cell.Length == 0 ? "(in cell -- name n/a on advertised)" : cell)));
 
                 var transform = obj.Transform;
                 if (transform != null)
                 {
                     var pos = transform.Position;
-                    lines.AppendLine(string.Format("Position:   ({0:F1}, {1:F1}, {2:F1})", pos.X, pos.Y, pos.Z));
-                    lines.Append(string.Format("Yaw:        {0:F1} deg", transform.YawP2l));
+                    lines.AppendLine(string.Format("Position:    ({0:F1}, {1:F1}, {2:F1})", pos.X, pos.Y, pos.Z));
+                    lines.Append(string.Format("Yaw:         {0:F1} deg", transform.YawP2l));
                 }
                 else
                 {
-                    lines.Append("Position:   (no transform available)");
+                    lines.Append("Position:    (no transform available)");
                 }
 
                 txtSelectedObject.Text = lines.ToString();
@@ -217,8 +263,8 @@ namespace TJT.UI.SubPanels
 
             btnCreateObject.Enabled = isSceneActive;
             btnCreateAppearance.Enabled = isSceneActive;
-            // btnReadSelectedObject is intentionally NOT scene-gated (null-safe getter; the advertised
-            // client doesn't deliver this signal here anyway).
+            // btnReadSelectedObject / btnInspectPlayer are intentionally NOT scene-gated (null-safe
+            // getters; the advertised client doesn't deliver this signal here anyway).
 
             previousIsSceneActive = isSceneActive;
         }

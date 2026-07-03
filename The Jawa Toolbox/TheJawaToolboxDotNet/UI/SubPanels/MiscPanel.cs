@@ -166,6 +166,9 @@ namespace TJT.UI.SubPanels
                 Size = new Size(411, 150),
                 Multiline = true,
                 ReadOnly = true,
+                // The full object readout (11 lines) + wrapped long paths overflow the fixed height;
+                // wrap stays on so appearance/portal paths fold instead of clipping.
+                ScrollBars = System.Windows.Forms.ScrollBars.Vertical,
                 Text = "Selected object: (none)"
             };
 

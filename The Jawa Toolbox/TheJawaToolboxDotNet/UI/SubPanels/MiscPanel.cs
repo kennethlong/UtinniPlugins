@@ -45,9 +45,14 @@ namespace TJT.UI.SubPanels
         // "Inspect Camera" runs an advertised-safe readout on the active game camera (Game.Camera ->
         // game::getCamera, advertised) -- position/yaw/pitch off the advertised transform chain, plus the
         // SWGEmu-only lens fields (see RenderCameraReadout).
+        // The sysmsg broadcast row injects a typed system message into the client's chat feed via the
+        // v14-advertised systemMessageManager::sendMessage row (SysMsg.Broadcast -- main-loop marshaled,
+        // skew-guarded native-side, so it degrades to a log line on a pre-v14 advertised exe).
         private UtinniButton btnReadSelectedObject;
         private UtinniButton btnInspectPlayer;
         private UtinniButton btnInspectCamera;
+        private UtinniTextbox txtSysMsg;
+        private UtinniButton btnSendSysMsg;
         private UtinniTextbox txtSelectedObject;
 
         public MiscPanel(UtINI ini) : base("Misc")
@@ -121,6 +126,35 @@ namespace TJT.UI.SubPanels
             };
             btnInspectCamera.Click += btnInspectCamera_Click;
 
+            // Sysmsg broadcast row: type a message, inject it into the client's chat/system feed via
+            // the v14-advertised systemMessageManager::sendMessage (SysMsg.Broadcast). Not scene-gated
+            // (SysMsg no-ops without a running client; skew-guarded native-side on advertised).
+            txtSysMsg = new UtinniTextbox
+            {
+                Anchor = System.Windows.Forms.AnchorStyles.Top | System.Windows.Forms.AnchorStyles.Left | System.Windows.Forms.AnchorStyles.Right,
+                BackColor = Color.FromArgb(64, 64, 64),
+                BorderStyle = System.Windows.Forms.BorderStyle.FixedSingle,
+                ForeColor = Color.WhiteSmoke,
+                Location = new Point(3, 165),
+                Size = new Size(326, 20),
+                Text = ""
+            };
+
+            btnSendSysMsg = new UtinniButton
+            {
+                Anchor = System.Windows.Forms.AnchorStyles.Top | System.Windows.Forms.AnchorStyles.Right,
+                BackColor = Color.FromArgb(0, 122, 204),
+                DrawOutline = false,
+                FlatStyle = System.Windows.Forms.FlatStyle.Popup,
+                ForeColor = Color.WhiteSmoke,
+                Location = new Point(335, 164),
+                Size = new Size(79, 20),
+                Text = "Send Sysmsg",
+                UseDisableColor = true,
+                UseVisualStyleBackColor = false
+            };
+            btnSendSysMsg.Click += btnSendSysMsg_Click;
+
             txtSelectedObject = new UtinniTextbox
             {
                 Anchor = System.Windows.Forms.AnchorStyles.Top | System.Windows.Forms.AnchorStyles.Left | System.Windows.Forms.AnchorStyles.Right,
@@ -128,17 +162,19 @@ namespace TJT.UI.SubPanels
                 BorderStyle = System.Windows.Forms.BorderStyle.FixedSingle,
                 ForeColor = Color.WhiteSmoke,
                 Font = new Font(System.Drawing.FontFamily.GenericMonospace, 8.25f),
-                Location = new Point(3, 165),
+                Location = new Point(3, 191),
                 Size = new Size(411, 150),
                 Multiline = true,
                 ReadOnly = true,
                 Text = "Selected object: (none)"
             };
 
-            Size = new Size(417, 321);
+            Size = new Size(417, 347);
             Controls.Add(btnReadSelectedObject);
             Controls.Add(btnInspectPlayer);
             Controls.Add(btnInspectCamera);
+            Controls.Add(txtSysMsg);
+            Controls.Add(btnSendSysMsg);
             Controls.Add(txtSelectedObject);
         }
 
@@ -167,6 +203,20 @@ namespace TJT.UI.SubPanels
         private void btnInspectCamera_Click(object sender, EventArgs e)
         {
             RenderCameraReadout(Game.Camera, "(no active camera -- not in a scene?)");
+        }
+
+        // Inject the typed text as a full system message (chatBoxOnly=false -- the engine's complete
+        // sysmsg treatment). SysMsg.Broadcast is fire-and-forget: main-loop marshaled, no-ops without
+        // a running client, and the native wrapper drops (logs) on a pre-v14 advertised exe.
+        private void btnSendSysMsg_Click(object sender, EventArgs e)
+        {
+            var text = txtSysMsg.Text;
+            if (string.IsNullOrEmpty(text))
+            {
+                return;
+            }
+
+            TJT.SWG.SysMsg.Broadcast(text);
         }
 
         private void RenderCameraReadout(Camera cam, string noneMessage)
@@ -355,8 +405,9 @@ namespace TJT.UI.SubPanels
 
             btnCreateObject.Enabled = isSceneActive;
             btnCreateAppearance.Enabled = isSceneActive;
-            // btnReadSelectedObject / btnInspectPlayer / btnInspectCamera are intentionally NOT scene-gated
-            // (null-safe getters; the advertised client doesn't deliver this signal here anyway).
+            // btnReadSelectedObject / btnInspectPlayer / btnInspectCamera / btnSendSysMsg are intentionally
+            // NOT scene-gated (null-safe getters / no-op-safe send; the advertised client doesn't deliver
+            // this signal here anyway).
 
             previousIsSceneActive = isSceneActive;
         }

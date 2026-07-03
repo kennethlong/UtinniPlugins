@@ -95,6 +95,11 @@ namespace TJT.Saving
             string ext = string.IsNullOrEmpty(savedPath) ? null : Path.GetExtension(savedPath);
             ReloadTier tier = ReloadAssetClassifier.Classify(ext, rootTypeIdOrNull);
 
+            // In-client editor-action feedback (Phase 24 / v14 sysmsg SEND): a quiet chat-box
+            // confirmation mirroring the tier the editor UI shows. SysMsg.Notify is fire-and-forget
+            // (main-loop marshaled, no-scene/skew-safe) so it cannot affect the reload dispatch.
+            string savedName = string.IsNullOrEmpty(savedPath) ? "asset" : Path.GetFileName(savedPath);
+
             switch (tier)
             {
                 case ReloadTier.ReloadedTextures:
@@ -102,6 +107,7 @@ namespace TJT.Saving
                     {
                         Graphics.ReloadTextures();
                     });
+                    TJT.SWG.SysMsg.Notify("saved " + savedName + " -- textures reloaded");
                     return ReloadTier.ReloadedTextures;
 
                 case ReloadTier.ReloadedTerrain:
@@ -116,6 +122,7 @@ namespace TJT.Saving
                         // to the previous GroundScene.Get().ReloadTerrain() call).
                         UtinniCoreDotNet.Utility.Native.ReloadCurrentTerrain();
                     });
+                    TJT.SWG.SysMsg.Notify("saved " + savedName + " -- terrain reloaded");
                     return ReloadTier.ReloadedTerrain;
 
                 case ReloadTier.PendingNextSceneChange:
@@ -123,6 +130,7 @@ namespace TJT.Saving
                     // triggers a TJT-driven scene change to refresh it. We do NOT fabricate a
                     // scene-change trigger here (08-REVIEWS HIGH-4: AddSetSceneCallback is a
                     // notification hook, NOT a trigger).
+                    TJT.SWG.SysMsg.Notify("saved " + savedName + " -- reloads on next scene change");
                     return ReloadTier.PendingNextSceneChange;
 
                 case ReloadTier.Unavailable:

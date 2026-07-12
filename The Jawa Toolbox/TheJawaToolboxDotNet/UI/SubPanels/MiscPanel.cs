@@ -26,6 +26,7 @@ using System;
 using System.Drawing;
 using TJT.SWG;
 using UtinniCore.Utinni;
+using UtinniCoreDotNet.Callbacks;
 using UtinniCoreDotNet.UI.Controls;
 
 namespace TJT.UI.SubPanels
@@ -39,8 +40,9 @@ namespace TJT.UI.SubPanels
         // advertised CuiManager.SelectedObject getter and show a multi-field readout (template name,
         // appearance file, network id, type, cell, position, yaw, active flag, portal/client-data files).
         // Every field routes through an advertised row (see RenderObjectReadout) so this is
-        // advertised-client-safe -- unlike the onTarget callback path, a pure getter wakes no editor
-        // subscriber chain (the safe way to consume world-pick). "Inspect Player" runs the same readout
+        // advertised-client-safe. Since v16 (Goal A+) the panel ALSO subscribes onTarget for the
+        // target-change auto-refresh (OnTargetChanged) -- still advertised-safe: the subscriber only
+        // re-reads the same getter set (no raw offsets). "Inspect Player" runs the same readout
         // on the player's own creature object (Game.PlayerCreatureObject, advertised) -- no click needed.
         // "Inspect Camera" runs an advertised-safe readout on the active game camera (Game.Camera ->
         // game::getCamera, advertised) -- position/yaw/pitch off the advertised transform chain, plus the
@@ -62,6 +64,13 @@ namespace TJT.UI.SubPanels
 
             cui = new CuiImpl();
             misc = new MiscImpl(this);
+
+            // v16 (24 / Goal A+) inspector auto-refresh: re-render the readout on every target
+            // change. Argless subscriber (lifetime = the panel's = the host's, matching the
+            // WorldSnapshotImpl precedent); the target is RE-READ via Game.PlayerLookAtTargetObject
+            // rather than taken from the callback, and all engine reads stay on the callback (game)
+            // thread -- the v16 lookAt-target shim is game-thread-only. Only text crosses to the UI.
+            ObjectCallbacks.SubscribeOnTarget(OnTargetChanged);
 
             CreateSettings(ini);
             ini.Load();
@@ -291,12 +300,31 @@ namespace TJT.UI.SubPanels
         // GetTemplateFilename / GetAppearanceFilename: those map to UNadvertised SWGEmu paths.)
         private void RenderReadout(string header, UtinniCore.Utinni.Object obj, string noneMessage)
         {
+            txtSelectedObject.Text = BuildReadoutText(header, obj, noneMessage);
+        }
+
+        // v16 (24 / Goal A+): target-change auto-refresh. Runs on the game thread (native onTarget
+        // dispatch out of hkSetTarget). The engine reads -- Game.PlayerLookAtTargetObject (the v16
+        // shim + v12 id-resolve) and the BuildReadoutText getter chain -- happen HERE, on the game
+        // thread; only the finished string is marshaled to the UI thread. On the advertised client a
+        // null with a target selected can be normal staleness (target unloaded); the readout says so.
+        private void OnTargetChanged()
+        {
+            string text = BuildReadoutText("Target", Game.PlayerLookAtTargetObject, "(no target)");
+
+            if (txtSelectedObject.IsHandleCreated)
+            {
+                txtSelectedObject.BeginInvoke((Action)(() => txtSelectedObject.Text = text));
+            }
+        }
+
+        private static string BuildReadoutText(string header, UtinniCore.Utinni.Object obj, string noneMessage)
+        {
             try
             {
                 if (obj == null)
                 {
-                    txtSelectedObject.Text = header + ": " + noneMessage;
-                    return;
+                    return header + ": " + noneMessage;
                 }
 
                 var lines = new System.Text.StringBuilder();
@@ -338,11 +366,11 @@ namespace TJT.UI.SubPanels
                     lines.Append("Position:    (no transform available)");
                 }
 
-                txtSelectedObject.Text = lines.ToString();
+                return lines.ToString();
             }
             catch (Exception ex)
             {
-                txtSelectedObject.Text = "Read failed: " + ex.Message;
+                return "Read failed: " + ex.Message;
             }
         }
 

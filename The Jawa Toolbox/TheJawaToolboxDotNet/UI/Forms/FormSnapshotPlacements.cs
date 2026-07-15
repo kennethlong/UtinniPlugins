@@ -84,10 +84,12 @@ namespace TJT.UI.Forms
 
         // One flat placements row, captured from the native node list ON THE GAME THREAD and projected
         // to the read-only grid. We never hold native Node pointers on the WinForms thread.
+        // Ids are int64: the advertised client's WorldSnapshotLive rows key by full NetworkId value
+        // (authored ids stay int32-range by the save contract; SWGEmu ids widen losslessly).
         private sealed class PlacementRow
         {
-            public int Id;
-            public int ParentId;
+            public long Id;
+            public long ParentId;
             public string ObjectTemplate;
             public string Cell;
             public float X;
@@ -264,31 +266,73 @@ namespace TJT.UI.Forms
             UtinniCoreDotNet.Callbacks.GroundSceneCallbacks.AddUpdateLoopCall(() =>
             {
                 var captured = new List<PlacementRow>();
+                int generation = 0;
                 try
                 {
-                    var rw = WorldSnapshotReaderWriter.Get();
-                    if (rw != null)
+                    if (WorldSnapshotLive.IsAvailable)
                     {
-                        int count = rw.NodeCount;
+                        // Goal B Wave 1 (v17): the advertised client reads the ENGINE-loaded live
+                        // snapshot through the id-keyed WorldSnapshotLive rows (the raw reader below is
+                        // SWGEmu-only 2002-layout). Top-level enumeration is authored-only by contract —
+                        // counts are SMALLER than SWGEmu raw walks (buildout rows are filtered), which
+                        // is the provenance contract working, not missing data.
+                        generation = WorldSnapshotLive.Generation;
+                        int count = WorldSnapshotLive.TopNodeCount;
                         for (int i = 0; i < count; i++)
                         {
-                            var node = rw.GetNodeAt(i);
-                            if (node == null)
+                            long id = WorldSnapshotLive.GetTopNodeIdAt(i);
+                            if (id == 0)
                             {
                                 continue;
                             }
 
-                            var pos = node.Transform.Position;
-                            captured.Add(new PlacementRow
+                            using (var info = new WorldSnapshotNodeInfo())
                             {
-                                Id = node.Id,
-                                ParentId = node.ParentId,
-                                ObjectTemplate = node.ObjectTemplateName ?? "",
-                                Cell = ResolveCellName(node.ParentId),
-                                X = pos.X,
-                                Y = pos.Y,
-                                Z = pos.Z,
-                            });
+                                if (!WorldSnapshotLive.GetNodeInfo(id, info))
+                                {
+                                    continue;
+                                }
+
+                                var pos = info.Transform.Position;
+                                captured.Add(new PlacementRow
+                                {
+                                    Id = id,
+                                    ParentId = info.ContainedById,
+                                    ObjectTemplate = WorldSnapshotLive.GetNodeTemplateName(id) ?? "",
+                                    Cell = ResolveCellName(info.ContainedById),
+                                    X = pos.X,
+                                    Y = pos.Y,
+                                    Z = pos.Z,
+                                });
+                            }
+                        }
+                    }
+                    else
+                    {
+                        var rw = WorldSnapshotReaderWriter.Get();
+                        if (rw != null)
+                        {
+                            int count = rw.NodeCount;
+                            for (int i = 0; i < count; i++)
+                            {
+                                var node = rw.GetNodeAt(i);
+                                if (node == null)
+                                {
+                                    continue;
+                                }
+
+                                var pos = node.Transform.Position;
+                                captured.Add(new PlacementRow
+                                {
+                                    Id = node.Id,
+                                    ParentId = node.ParentId,
+                                    ObjectTemplate = node.ObjectTemplateName ?? "",
+                                    Cell = ResolveCellName(node.ParentId),
+                                    X = pos.X,
+                                    Y = pos.Y,
+                                    Z = pos.Z,
+                                });
+                            }
                         }
                     }
                 }
@@ -301,7 +345,7 @@ namespace TJT.UI.Forms
                 // Marshal back to the UI thread to bind.
                 if (IsHandleCreated)
                 {
-                    BeginInvoke((Action)(() => OnRowsCaptured(captured)));
+                    BeginInvoke((Action)(() => OnRowsCaptured(captured, generation)));
                 }
             });
         }
@@ -309,12 +353,12 @@ namespace TJT.UI.Forms
         // World-cell placements (parentId 0) have no cell name. For child nodes we surface the parent
         // id as a stable hint (a full parent-id→cell-name table is a polish follow-up — the column is
         // honest about what it shows).
-        private static string ResolveCellName(int parentId)
+        private static string ResolveCellName(long parentId)
         {
             return parentId == 0 ? "" : "cell " + parentId.ToString(CultureInfo.InvariantCulture);
         }
 
-        private void OnRowsCaptured(List<PlacementRow> captured)
+        private void OnRowsCaptured(List<PlacementRow> captured, int generation)
         {
             allRows.Clear();
             if (captured == null)
@@ -327,7 +371,13 @@ namespace TJT.UI.Forms
             allRows.AddRange(captured);
             ApplyLoadedState();
             BindGrid();
-            SetStatus(allRows.Count + " placements loaded.", false);
+            // The generation suffix (advertised client only) makes snapshot-boundary invalidation
+            // visible: it changes when the engine load/unload/clears the snapshot — compare !=, not +1.
+            SetStatus(
+                generation > 0
+                    ? allRows.Count + " placements loaded (gen " + generation.ToString(CultureInfo.InvariantCulture) + ")."
+                    : allRows.Count + " placements loaded.",
+                false);
         }
 
         // ── Grid binding + filter ──────────────────────────────────────────────
@@ -407,10 +457,12 @@ namespace TJT.UI.Forms
 
             // A single-row selection drives the shipped gizmo + per-node panel controls. A
             // multi-selection only updates the count (the single-node gizmo is NOT driven).
+            // (On the advertised client the raw-reader select degrades to a no-op — selection-driven
+            // gizmo/controls are Wave-2 territory; the Wave-1 table is read/browse only.)
             if (selected == 1)
             {
                 var tag = grid.SelectedRows[0].Tag;
-                if (tag is int nodeId)
+                if (tag is long nodeId)
                 {
                     worldSnapshot.SelectNodeById(nodeId);
                 }
@@ -424,12 +476,15 @@ namespace TJT.UI.Forms
 
         private List<int> GetSelectedIds()
         {
+            // Bulk ops still take int32 ids (the SWGEmu-era raw-reader path; they no-op per-id on the
+            // advertised client until Wave 2). Authored ids round-trip int32 by the save contract, so
+            // the narrowing is lossless for every row this table can show.
             var ids = new List<int>();
             foreach (DataGridViewRow row in grid.SelectedRows)
             {
-                if (row.Tag is int id)
+                if (row.Tag is long id)
                 {
-                    ids.Add(id);
+                    ids.Add(unchecked((int)id));
                 }
             }
             return ids;

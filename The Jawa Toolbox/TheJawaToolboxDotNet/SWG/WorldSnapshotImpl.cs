@@ -335,11 +335,14 @@ namespace TJT.SWG
         // the in-world look-at target. Runs on the game thread (gizmo enable + control update). When the
         // node's in-world object is resolvable we enable the gizmo on it; the panel controls always
         // update so the modder sees the selected node's id / template / position.
-        public void SelectNodeById(int nodeId)
+        public void SelectNodeById(long nodeId)
         {
             GroundSceneCallbacks.AddUpdateLoopCall(() =>
             {
-                var node = WorldSnapshotReaderWriter.Get().GetNodeById(nodeId);
+                // int64 at the seam (advertised WorldSnapshotLive rows key by full NetworkId value);
+                // the raw-reader lookup below is SWGEmu-only int32 (it degrades null on advertised —
+                // selection-driven gizmo/controls light up there in Wave 2).
+                var node = WorldSnapshotReaderWriter.Get().GetNodeById(unchecked((int)nodeId));
                 if (node == null)
                 {
                     return;

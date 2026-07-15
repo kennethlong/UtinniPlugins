@@ -125,8 +125,11 @@ namespace TJT.UI.SubPanels
             }
 
             // Pass the ACTUALLY-loaded snapshot (not merely the combo selection) so the window honestly
-            // shows the empty-state until a snapshot is loaded from this panel.
-            placementsForm.SetSnapshot(loadedSnapshotName);
+            // shows the empty-state until a snapshot is loaded from this panel. On the advertised
+            // client the ENGINE loads the current scene's snapshot itself (this panel's Load flow is
+            // SWGEmu-only), so when a scene is active the table reads that live snapshot instead
+            // (Goal B Wave 1 — WorldSnapshotLive id-keyed rows).
+            placementsForm.SetSnapshot(ResolveEffectiveSnapshotName());
 
             if (placementsForm.Visible)
             {
@@ -228,6 +231,33 @@ namespace TJT.UI.SubPanels
             btnAddNode.Enabled = isSceneActive;
 
             previousIsSceneActive = isSceneActive;
+
+            // Advertised client (Goal B Wave 1): the engine (un)loads the live snapshot with the
+            // scene, so an open placements window re-baselines at every scene boundary — the table
+            // re-reads on scene entry (generation bump visible in its status) and empties on exit.
+            if (WorldSnapshotLive.IsAvailable && loadedSnapshotName == null &&
+                placementsForm != null && !placementsForm.IsDisposed && placementsForm.Visible)
+            {
+                placementsForm.SetSnapshot(ResolveEffectiveSnapshotName());
+            }
+        }
+
+        // The snapshot name the placements window should show: the panel-loaded snapshot when one
+        // exists (SWGEmu flow), else — advertised client with an active scene — the engine-loaded
+        // live snapshot marker. Null = nothing loaded (honest empty-state).
+        private string ResolveEffectiveSnapshotName()
+        {
+            if (loadedSnapshotName != null)
+            {
+                return loadedSnapshotName;
+            }
+
+            if (WorldSnapshotLive.IsAvailable && previousIsSceneActive)
+            {
+                return "(live scene)";
+            }
+
+            return null;
         }
 
         public void EnableSelectedNodeControls(bool value)

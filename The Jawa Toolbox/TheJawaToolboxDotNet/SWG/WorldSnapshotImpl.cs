@@ -126,10 +126,20 @@ namespace TJT.SWG
 
         public void Unload()
         {
-            GroundSceneCallbacks.AddUpdateLoopCall(() =>
+            if (WorldSnapshotLive.IsPersistenceAvailable)
             {
-                WorldSnapshot.Unload();
-            });
+                GroundSceneCallbacks.AddUpdateLoopCall(() =>
+                {
+                    WorldSnapshotLive.UnloadSnapshot();
+                });
+            }
+            else
+            {
+                GroundSceneCallbacks.AddUpdateLoopCall(() =>
+                {
+                    WorldSnapshot.Unload();
+                });
+            }
             editorPlugin.ClearUndoStack?.Invoke();
             // GAP 2: the selection gizmo would otherwise linger at a now-removed node.
             DisableGizmo();
@@ -137,10 +147,20 @@ namespace TJT.SWG
 
         public void Reload()
         {
-            GroundSceneCallbacks.AddUpdateLoopCall(() =>
+            if (WorldSnapshotLive.IsPersistenceAvailable)
             {
-                WorldSnapshot.Reload();
-            });
+                GroundSceneCallbacks.AddUpdateLoopCall(() =>
+                {
+                    WorldSnapshotLive.ReloadSnapshot();
+                });
+            }
+            else
+            {
+                GroundSceneCallbacks.AddUpdateLoopCall(() =>
+                {
+                    WorldSnapshot.Reload();
+                });
+            }
             editorPlugin.ClearUndoStack?.Invoke();
             // GAP 2: the selection gizmo would otherwise linger at a now-removed node.
             DisableGizmo();
@@ -148,6 +168,19 @@ namespace TJT.SWG
 
         public void Save()
         {
+            // Wave 3 (v19): on the advertised client the save is the id-keyed WorldSnapshotLive path
+            // (writes the authored .ws to the top loose SearchPath root; typed result -> editor
+            // message). SWGEmu keeps the raw ReaderWriter save. Runs on the game thread either way.
+            if (WorldSnapshotLive.IsPersistenceAvailable)
+            {
+                GroundSceneCallbacks.AddUpdateLoopCall(() =>
+                {
+                    var result = WorldSnapshotLive.SaveSnapshot();
+                    SysMsg.Notify(DescribeSaveResult(result));
+                });
+                return;
+            }
+
             GroundSceneCallbacks.AddUpdateLoopCall(() =>
             {
                 WorldSnapshotReaderWriter.Get().SaveFile("");
@@ -156,10 +189,44 @@ namespace TJT.SWG
 
         public void SaveAs(string snapshotName)
         {
+            // Save-as (arbitrary name) is deferred post-v1 on the advertised client (§5.1d) -- the
+            // save destination is the current scene's .ws only. Fall back to the current-scene Save
+            // there so the button isn't dead; SWGEmu keeps the real save-as path.
+            if (WorldSnapshotLive.IsPersistenceAvailable)
+            {
+                Save();
+                return;
+            }
+
             GroundSceneCallbacks.AddUpdateLoopCall(() =>
             {
                 WorldSnapshotReaderWriter.Get().SaveFile(snapshotName);
             });
+        }
+
+        // Map the provider's frozen wsSaveSnapshot result enum to a distinct editor message -- the
+        // whole point of the typed result is that "save silently did nothing" is never a state.
+        private static string DescribeSaveResult(WorldSnapshotLive.SaveResult result)
+        {
+            switch (result)
+            {
+                case WorldSnapshotLive.SaveResult.Ok:
+                    return "snapshot saved to " + WorldSnapshotLive.SavePath + "/snapshot/";
+                case WorldSnapshotLive.SaveResult.NoSnapshotLoaded:
+                    return "save skipped: no snapshot loaded";
+                case WorldSnapshotLive.SaveResult.NoLooseSearchPath:
+                    return "save failed: no loose search path configured (nowhere to write)";
+                case WorldSnapshotLive.SaveResult.DestinationShadowed:
+                    return "save failed: a higher-priority archive shadows the file (the engine would load the old copy)";
+                case WorldSnapshotLive.SaveResult.IdInt32Overflow:
+                    return "save failed: a node id doesn't fit the on-disk 32-bit format";
+                case WorldSnapshotLive.SaveResult.BuildoutSetIntegrity:
+                    return "save failed: buildout-set integrity check (data tripwire)";
+                case WorldSnapshotLive.SaveResult.WriteFailure:
+                    return "save failed: disk write error (permissions/space)";
+                default:
+                    return "save unavailable on this client";
+            }
         }
 
         public void AddNode(string objectFilename)
@@ -610,16 +677,10 @@ namespace TJT.SWG
 
         public void EnableGizmo(UtinniCore.Utinni.Object target)
         {
-            // Wave-2 §5.6: the live gizmo render is NGE-unsafe on the advertised client (raw
-            // camera->projectionMatrix offset -> crash; native draw() is guarded dark there and
-            // the preDraw queue no longer dispatches). Don't pretend it's coming — no-op on
-            // advertised so node-editing still drives add/remove/duplicate/radius + the readout,
-            // just without the in-world manipulator. SWGEmu path unchanged.
-            if (WorldSnapshotLive.IsMutationAvailable)
-            {
-                return;
-            }
-
+            // Wave 3 (v19): the live gizmo now works on the advertised client too -- native draw()
+            // reads the camera via the advertised camera::getTransformO2W/getProjectionMatrix rows
+            // (rider 4C) instead of the raw NGE-unsafe projectionMatrix offset that crashed the §5.6
+            // probe, and hkUpdateLoop re-dispatches the preDraw queue there. No advertised no-op.
             GroundSceneCallbacks.AddPreDrawLoopCall(() =>
             {
                 imgui_impl.Enable(target);

@@ -610,6 +610,16 @@ namespace TJT.SWG
 
         public void EnableGizmo(UtinniCore.Utinni.Object target)
         {
+            // Wave-2 §5.6: the live gizmo render is NGE-unsafe on the advertised client (raw
+            // camera->projectionMatrix offset -> crash; native draw() is guarded dark there and
+            // the preDraw queue no longer dispatches). Don't pretend it's coming — no-op on
+            // advertised so node-editing still drives add/remove/duplicate/radius + the readout,
+            // just without the in-world manipulator. SWGEmu path unchanged.
+            if (WorldSnapshotLive.IsMutationAvailable)
+            {
+                return;
+            }
+
             GroundSceneCallbacks.AddPreDrawLoopCall(() =>
             {
                 imgui_impl.Enable(target);

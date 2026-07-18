@@ -59,6 +59,7 @@ namespace TJT.UI.SubPanels
             this.btnUnload = new UtinniCoreDotNet.UI.Controls.UtinniButton();
             this.btnSave = new UtinniCoreDotNet.UI.Controls.UtinniButton();
             this.btnAddNode = new UtinniCoreDotNet.UI.Controls.UtinniButton();
+            this.btnDuplicateNode = new UtinniCoreDotNet.UI.Controls.UtinniButton();
             this.btnRemoveSelectedNode = new UtinniCoreDotNet.UI.Controls.UtinniButton();
             this.txtNewNodeFilename = new UtinniCoreDotNet.UI.Controls.UtinniTextbox();
             this.chkEnableNodeEditing = new UtinniCoreDotNet.UI.Controls.UtinniToggle();
@@ -228,9 +229,25 @@ namespace TJT.UI.SubPanels
             this.btnAddNode.UseDisableColor = true;
             this.btnAddNode.UseVisualStyleBackColor = false;
             this.btnAddNode.Click += new System.EventHandler(this.btnAddNode_Click);
-            // 
+            //
+            // btnDuplicateNode
+            //
+            this.btnDuplicateNode.BackColor = System.Drawing.Color.FromArgb(((int)(((byte)(0)))), ((int)(((byte)(122)))), ((int)(((byte)(204)))));
+            this.btnDuplicateNode.DrawOutline = false;
+            this.btnDuplicateNode.Enabled = false;
+            this.btnDuplicateNode.FlatStyle = System.Windows.Forms.FlatStyle.Popup;
+            this.btnDuplicateNode.ForeColor = System.Drawing.Color.WhiteSmoke;
+            this.btnDuplicateNode.Location = new System.Drawing.Point(84, 97);
+            this.btnDuplicateNode.Name = "btnDuplicateNode";
+            this.btnDuplicateNode.Size = new System.Drawing.Size(75, 20);
+            this.btnDuplicateNode.TabIndex = 345;
+            this.btnDuplicateNode.Text = "Duplicate";
+            this.btnDuplicateNode.UseDisableColor = true;
+            this.btnDuplicateNode.UseVisualStyleBackColor = false;
+            this.btnDuplicateNode.Click += new System.EventHandler(this.btnDuplicateNode_Click);
+            //
             // btnRemoveSelectedNode
-            // 
+            //
             this.btnRemoveSelectedNode.BackColor = System.Drawing.Color.FromArgb(((int)(((byte)(0)))), ((int)(((byte)(122)))), ((int)(((byte)(204)))));
             this.btnRemoveSelectedNode.DrawOutline = false;
             this.btnRemoveSelectedNode.Enabled = false;
@@ -1049,6 +1066,7 @@ namespace TJT.UI.SubPanels
             this.Controls.Add(this.txtNewNodeFilename);
             this.Controls.Add(this.btnRemoveSelectedNode);
             this.Controls.Add(this.btnAddNode);
+            this.Controls.Add(this.btnDuplicateNode);
             this.Controls.Add(this.btnSave);
             this.Controls.Add(this.btnPlacements);
             this.Controls.Add(this.btnUnload);
@@ -1075,6 +1093,7 @@ namespace TJT.UI.SubPanels
         private UtinniCoreDotNet.UI.Controls.UtinniButton btnUnload;
         private UtinniCoreDotNet.UI.Controls.UtinniButton btnSave;
         private UtinniCoreDotNet.UI.Controls.UtinniButton btnAddNode;
+        private UtinniCoreDotNet.UI.Controls.UtinniButton btnDuplicateNode;
         private UtinniCoreDotNet.UI.Controls.UtinniButton btnRemoveSelectedNode;
         private UtinniCoreDotNet.UI.Controls.UtinniTextbox txtNewNodeFilename;
         private UtinniCoreDotNet.UI.Controls.UtinniToggle chkEnableNodeEditing;

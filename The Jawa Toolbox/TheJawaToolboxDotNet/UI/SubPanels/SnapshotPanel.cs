@@ -173,6 +173,15 @@ namespace TJT.UI.SubPanels
             worldSnapshot.AddNode(txtNewNodeFilename.Text);
         }
 
+        // Duplicate the currently look-at-targeted snapshot node. A button (not just the Ctrl+D
+        // hotkey) because keyboard hotkeys don't reach the overlay on the advertised client -- the
+        // embedded game window consumes them (Ctrl+D is also the game's character-rotate). Mirrors
+        // the Add Node button path; DuplicateNode itself is target-gated + game-thread marshaled.
+        private void btnDuplicateNode_Click(object sender, EventArgs e)
+        {
+            worldSnapshot.DuplicateNode();
+        }
+
         private void btnRemoveNode_Click(object sender, EventArgs e)
         {
             worldSnapshot.RemoveNode();
@@ -232,6 +241,7 @@ namespace TJT.UI.SubPanels
             btnUnload.Enabled = isSceneActive;
 
             btnAddNode.Enabled = isSceneActive;
+            btnDuplicateNode.Enabled = isSceneActive;
 
             previousIsSceneActive = isSceneActive;
 

@@ -164,6 +164,33 @@ namespace TJT.SWG
 
         public void AddNode(string objectFilename)
         {
+            // Goal B Wave 2 (v18): id-keyed add on the advertised client. Top-level at the
+            // player's WORLD transform (v1 — contained interactive adds are a Wave-3-freeze
+            // follow-up); the provider pre-validates everything before minting (origin guards,
+            // template, id range), expands POB cells atomically, spawns immediately, and
+            // defaults radius 512 (provider flag #1 — tune via the radius control after).
+            if (WorldSnapshotLive.IsMutationAvailable)
+            {
+                GroundSceneCallbacks.AddUpdateLoopCall(() =>
+                {
+                    long newId = WorldSnapshotLive.AddObject(objectFilename, Game.Player.Transform, 0);
+                    if (newId != 0)
+                    {
+                        var record = LiveWorldSnapshotNodeRecord.Capture(newId);
+                        if (record != null)
+                        {
+                            editorPlugin.AddUndoCommand(this, new AddUndoCommandEventArgs(new AddLiveWorldSnapshotNodeCommand(record)));
+                        }
+                        SysMsg.Notify("snapshot node " + newId + " added (live only until Wave-3 save)");
+                    }
+                    else
+                    {
+                        SysMsg.Notify("snapshot add refused (template/position/id pre-check failed)");
+                    }
+                });
+                return;
+            }
+
             GroundSceneCallbacks.AddUpdateLoopCall(() =>
             {
                 var node = WorldSnapshot.CreateAddNode(objectFilename, Game.Player.ObjectToParent);
@@ -178,6 +205,44 @@ namespace TJT.SWG
         {
             if (EnableNodeEditing)
             {
+                // Goal B Wave 2 (v18): id-keyed remove with the provider's full teardown.
+                // TRI-STATE return: 1 removed · 0 miss · -1 OCCUPIED (a non-client-cached
+                // object — e.g. the player — stands inside the containment subtree; nothing
+                // was touched). Record is captured BEFORE the remove so Undo can replay the
+                // subtree at its original ids through wsAddNodeAt.
+                if (WorldSnapshotLive.IsMutationAvailable)
+                {
+                    GroundSceneCallbacks.AddUpdateLoopCall(() =>
+                    {
+                        var obj = Game.PlayerLookAtTargetObject;
+                        if (obj == null)
+                        {
+                            return;
+                        }
+
+                        long id = obj.NetworkIdValue;
+                        var record = id != 0 ? LiveWorldSnapshotNodeRecord.Capture(id) : null;
+                        if (record == null)
+                        {
+                            return; // target is not a snapshot node — miss-safe no-op
+                        }
+
+                        int result = WorldSnapshotLive.RemoveNode(id);
+                        if (result == 1)
+                        {
+                            editorPlugin.AddUndoCommand(this, new AddUndoCommandEventArgs(new RemoveLiveWorldSnapshotNodeCommand(record)));
+                            DisableGizmo();
+                            snapshotPanel.UpdateSelectedNodeControls(null);
+                            SysMsg.Notify("snapshot node " + id + " removed (live only until Wave-3 save)");
+                        }
+                        else if (result == -1)
+                        {
+                            SysMsg.Notify("can't delete an occupied building — step (or teleport) out of it first");
+                        }
+                    });
+                    return;
+                }
+
                 GroundSceneCallbacks.AddUpdateLoopCall(() =>
                 {
                     var obj = Game.PlayerLookAtTargetObject;
@@ -337,6 +402,38 @@ namespace TJT.SWG
         // update so the modder sees the selected node's id / template / position.
         public void SelectNodeById(long nodeId)
         {
+            // Wave 2 (v18): placements-row selection drives the live gizmo + per-node controls
+            // on the advertised client too (id-keyed; the object resolve goes through the v12
+            // advertised network::getObjectById row).
+            if (WorldSnapshotLive.IsAvailable)
+            {
+                GroundSceneCallbacks.AddUpdateLoopCall(() =>
+                {
+                    using (var info = new WorldSnapshotNodeInfo())
+                    {
+                        if (!WorldSnapshotLive.GetNodeInfo(nodeId, info))
+                        {
+                            return;
+                        }
+
+                        var obj = Network.GetObjectById(nodeId);
+                        if (obj != null && EnableNodeEditing)
+                        {
+                            EnableGizmo(obj);
+                        }
+
+                        var position = info.Transform.Position;
+                        snapshotPanel.UpdateSelectedNodeControlsLive(
+                            nodeId,
+                            info.ContainedById,
+                            WorldSnapshotLive.GetNodeTemplateName(nodeId),
+                            info.Radius,
+                            new Vector(position.X, position.Y, position.Z));
+                    }
+                });
+                return;
+            }
+
             GroundSceneCallbacks.AddUpdateLoopCall(() =>
             {
                 // int64 at the seam (advertised WorldSnapshotLive rows key by full NetworkId value);
@@ -379,6 +476,42 @@ namespace TJT.SWG
             {
                 DisableGizmo();
                 snapshotPanel.UpdateSelectedNodeControls(null);
+            }
+            else if (WorldSnapshotLive.IsAvailable)
+            {
+                // Goal B Wave 2 (v18): id-keyed selected-node state on the advertised client.
+                // The raw reader below is SWGEmu-only; here the target's advertised-safe
+                // NetworkIdValue keys the live snapshot directly (subtree nodes included via
+                // the provider's networkId map). Enabling the per-node controls also arms the
+                // rotation/position buttons — their live-object write path is the deliberate
+                // §5.6 probe (node DATA sync for transforms lands with the Wave-3 freeze).
+                long id = target.NetworkIdValue;
+                using (var info = new WorldSnapshotNodeInfo())
+                {
+                    if (id != 0 && WorldSnapshotLive.GetNodeInfo(id, info))
+                    {
+                        if (EnableNodeEditing)
+                        {
+                            EnableGizmo(target);
+                        }
+                        else
+                        {
+                            DisableGizmo();
+                        }
+
+                        var position = info.Transform.Position;
+                        snapshotPanel.UpdateSelectedNodeControlsLive(
+                            id,
+                            info.ContainedById,
+                            WorldSnapshotLive.GetNodeTemplateName(id),
+                            info.Radius,
+                            new Vector(position.X, position.Y, position.Z));
+                    }
+                    else
+                    {
+                        DisableGizmo();
+                    }
+                }
             }
             else
             {
@@ -495,6 +628,25 @@ namespace TJT.SWG
 
         public void SetRadius(float radius)
         {
+            // Wave 2 (v18): id-keyed on advertised — the provider re-seats the sphere-tree
+            // extent too (the SWGEmu raw field write below never did).
+            if (WorldSnapshotLive.IsMutationAvailable)
+            {
+                GroundSceneCallbacks.AddUpdateLoopCall(() =>
+                {
+                    var obj = Game.PlayerLookAtTargetObject;
+                    if (obj != null)
+                    {
+                        long id = obj.NetworkIdValue;
+                        if (id != 0)
+                        {
+                            WorldSnapshotLive.SetNodeRadius(id, radius);
+                        }
+                    }
+                });
+                return;
+            }
+
             GroundSceneCallbacks.AddUpdateLoopCall(() =>
             {
                 var obj = Game.PlayerLookAtTargetObject;
@@ -548,6 +700,46 @@ namespace TJT.SWG
 
         public void DuplicateNode()
         {
+            // Goal B Wave 2 (v18): duplicate = fresh provider-minted add from the source node's
+            // recorded template/transform/container (parent-relative, so contained nodes land in
+            // the same cell — POB-into-container is provider-refused). Lands exactly on top of
+            // the original; drag it apart with the gizmo, like the SWGEmu flow.
+            if (WorldSnapshotLive.IsMutationAvailable)
+            {
+                GroundSceneCallbacks.AddUpdateLoopCall(() =>
+                {
+                    var obj = Game.PlayerLookAtTargetObject;
+                    if (obj == null)
+                    {
+                        return;
+                    }
+
+                    long sourceId = obj.NetworkIdValue;
+                    var source = sourceId != 0 ? LiveWorldSnapshotNodeRecord.Capture(sourceId) : null;
+                    if (source == null)
+                    {
+                        return;
+                    }
+
+                    long newId = WorldSnapshotLive.AddObject(source.ObjectTemplateName, source.NodeTransform, source.ContainedById);
+                    if (newId != 0)
+                    {
+                        WorldSnapshotLive.SetNodeRadius(newId, source.Radius);
+                        var record = LiveWorldSnapshotNodeRecord.Capture(newId);
+                        if (record != null)
+                        {
+                            editorPlugin.AddUndoCommand(this, new AddUndoCommandEventArgs(new AddLiveWorldSnapshotNodeCommand(record)));
+                        }
+                        SysMsg.Notify("snapshot node " + sourceId + " duplicated as " + newId);
+                    }
+                    else
+                    {
+                        SysMsg.Notify("duplicate refused (pre-check failed)");
+                    }
+                });
+                return;
+            }
+
             GroundSceneCallbacks.AddUpdateLoopCall(() =>
             {
                 var obj = Game.PlayerLookAtTargetObject;

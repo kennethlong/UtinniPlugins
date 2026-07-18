@@ -41,6 +41,9 @@ namespace TJT.UI.SubPanels
         void SetCmbSnapshots(List<string> snapshots);
         void UpdateNodeEditingMode(bool enable);
         void UpdateSelectedNodeControls(WorldSnapshotReaderWriter.Node node, string cellName = "", string typeText = "");
+        // Wave 2 (v18): the id-keyed selected-node state for the advertised client's live
+        // snapshot (no native Node exists there).
+        void UpdateSelectedNodeControlsLive(long id, long parentId, string templateName, float radius, Vector position);
         void UpdateSelectedNodeControlsPosition(Vector position);
         void UpdateGizmoModeControls(bool value);
         void UpdateGizmoOperationControls(bool value);
@@ -327,6 +330,28 @@ namespace TJT.UI.SubPanels
             txtNodeType.Text = typeText;
 
             UpdateSelectedNodeControlsPosition(node.Transform.Position);
+        }
+
+        // Wave 2 (v18): live-snapshot flavor of UpdateSelectedNodeControls — same control set,
+        // fed from id-keyed scalars instead of a native Node. Cell name is the parent-id hint
+        // (raw cell-name reads are not advertised-safe); type text stays empty for the same
+        // reason. The radius handler detaches around the programmatic set so a target change
+        // doesn't enqueue a redundant live radius write.
+        public void UpdateSelectedNodeControlsLive(long id, long parentId, string templateName, float radius, Vector position)
+        {
+            EnableSelectedNodeControls(chkEnableNodeEditing.Checked);
+
+            nudNodeRadius.ValueChanged -= nudNodeRadius_ValueChanged;
+            nudNodeRadius.Value = (decimal)radius;
+            nudNodeRadius.ValueChanged += nudNodeRadius_ValueChanged;
+
+            txtNodeId.Text = id.ToString();
+            txtNodeParentId.Text = parentId.ToString();
+            txtNodeCellName.Text = parentId != 0 ? "cell " + parentId : "";
+            txtNodeFilename.Text = templateName;
+            txtNodeType.Text = "";
+
+            UpdateSelectedNodeControlsPosition(position);
         }
 
         public void UpdateSelectedNodeControlsPosition(Vector position)

@@ -315,6 +315,53 @@ namespace TJT.SWG
 
         public void BulkDelete(IEnumerable<int> selectedIds)
         {
+            // Wave 2 (v18): id-keyed bulk delete on the advertised client — also the practical
+            // route for the occupied-POB smoke there (in-world building targeting needs the
+            // SWGEmu-only AllowTargetEverything byte patch; the placements table needs nothing).
+            // Per-id: capture-before-remove for undo replay; tri-state respected (-1 occupied
+            // counts surface via SysMsg, nothing touched for those nodes).
+            if (WorldSnapshotLive.IsMutationAvailable)
+            {
+                var ids = new List<int>(selectedIds);
+                GroundSceneCallbacks.AddUpdateLoopCall(() =>
+                {
+                    int removed = 0;
+                    int occupiedCount = 0;
+                    foreach (var id in ids)
+                    {
+                        var record = LiveWorldSnapshotNodeRecord.Capture(id);
+                        if (record == null)
+                        {
+                            continue;
+                        }
+
+                        int result = WorldSnapshotLive.RemoveNode(id);
+                        if (result == 1)
+                        {
+                            removed++;
+                            editorPlugin.AddUndoCommand(this, new AddUndoCommandEventArgs(new RemoveLiveWorldSnapshotNodeCommand(record)));
+                        }
+                        else if (result == -1)
+                        {
+                            occupiedCount++;
+                        }
+                    }
+
+                    DisableGizmo();
+                    snapshotPanel.UpdateSelectedNodeControls(null);
+
+                    if (occupiedCount > 0)
+                    {
+                        SysMsg.Notify(removed + " removed; " + occupiedCount + " refused as occupied (step out first — server-populated buildings always refuse)");
+                    }
+                    else if (removed > 0)
+                    {
+                        SysMsg.Notify(removed + " snapshot node(s) removed (live only until Wave-3 save)");
+                    }
+                });
+                return;
+            }
+
             var plan = WorldSnapshotBulkComposer.ComposeDelete(selectedIds);
 
             GroundSceneCallbacks.AddUpdateLoopCall(() =>

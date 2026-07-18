@@ -243,8 +243,11 @@ namespace TJT.UI.SubPanels
         }
 
         // The snapshot name the placements window should show: the panel-loaded snapshot when one
-        // exists (SWGEmu flow), else — advertised client with an active scene — the engine-loaded
-        // live snapshot marker. Null = nothing loaded (honest empty-state).
+        // exists (SWGEmu flow), else — advertised client — the engine-loaded live snapshot marker.
+        // Null = nothing loaded (honest empty-state). NOT gated on previousIsSceneActive: on the
+        // advertised client the scene-active callback fires only through the TJT loadScene path
+        // (setupScene is un-detourable there), so a NORMAL login never arms it — the live-read
+        // itself is the honest probe (0 rows + gen 0 when no scene is up, real rows once in-world).
         private string ResolveEffectiveSnapshotName()
         {
             if (loadedSnapshotName != null)
@@ -252,7 +255,7 @@ namespace TJT.UI.SubPanels
                 return loadedSnapshotName;
             }
 
-            if (WorldSnapshotLive.IsAvailable && previousIsSceneActive)
+            if (WorldSnapshotLive.IsAvailable)
             {
                 return "(live scene)";
             }

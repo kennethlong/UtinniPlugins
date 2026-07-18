@@ -518,47 +518,66 @@ namespace TJT.SWG
 
         public void OnTarget()
         {
-            var target = Game.PlayerLookAtTargetObject;
-            if (target == null)
+            // Goal B Wave 2 (v18), advertised client: EVERY engine read marshals to the game
+            // thread. OnTarget is invoked both from the game-thread onTarget callback AND from
+            // UI-THREAD checkbox/hotkey handlers (UpdateNodeEditingMode) — the v16 target shim
+            // and the v17/v18 snapshot rows are game-thread-only contracts, and calling them
+            // from WinForms crashed the 07-18 smoke (module-unknown AV on the node-editing
+            // toggle). The SWGEmu branch below keeps its historical inline reads (raw memory
+            // walks that tolerate the UI-thread quirk; D-00 byte-unchanged).
+            if (WorldSnapshotLive.IsAvailable)
             {
-                DisableGizmo();
-                snapshotPanel.UpdateSelectedNodeControls(null);
-            }
-            else if (WorldSnapshotLive.IsAvailable)
-            {
-                // Goal B Wave 2 (v18): id-keyed selected-node state on the advertised client.
-                // The raw reader below is SWGEmu-only; here the target's advertised-safe
-                // NetworkIdValue keys the live snapshot directly (subtree nodes included via
-                // the provider's networkId map). Enabling the per-node controls also arms the
-                // rotation/position buttons — their live-object write path is the deliberate
-                // §5.6 probe (node DATA sync for transforms lands with the Wave-3 freeze).
-                long id = target.NetworkIdValue;
-                using (var info = new WorldSnapshotNodeInfo())
+                GroundSceneCallbacks.AddUpdateLoopCall(() =>
                 {
-                    if (id != 0 && WorldSnapshotLive.GetNodeInfo(id, info))
+                    var liveTarget = Game.PlayerLookAtTargetObject;
+                    if (liveTarget == null)
                     {
-                        if (EnableNodeEditing)
+                        DisableGizmo();
+                        snapshotPanel.UpdateSelectedNodeControls(null);
+                        return;
+                    }
+
+                    // Id-keyed selected-node state: the target's advertised-safe NetworkIdValue
+                    // keys the live snapshot directly (subtree nodes included via the provider's
+                    // networkId map). Enabling the per-node controls also arms the rotation/
+                    // position buttons — their live-object write path is the deliberate §5.6
+                    // probe (node DATA sync for transforms lands with the Wave-3 freeze).
+                    long id = liveTarget.NetworkIdValue;
+                    using (var info = new WorldSnapshotNodeInfo())
+                    {
+                        if (id != 0 && WorldSnapshotLive.GetNodeInfo(id, info))
                         {
-                            EnableGizmo(target);
+                            if (EnableNodeEditing)
+                            {
+                                EnableGizmo(liveTarget);
+                            }
+                            else
+                            {
+                                DisableGizmo();
+                            }
+
+                            var position = info.Transform.Position;
+                            snapshotPanel.UpdateSelectedNodeControlsLive(
+                                id,
+                                info.ContainedById,
+                                WorldSnapshotLive.GetNodeTemplateName(id),
+                                info.Radius,
+                                new Vector(position.X, position.Y, position.Z));
                         }
                         else
                         {
                             DisableGizmo();
                         }
+                    }
+                });
+                return;
+            }
 
-                        var position = info.Transform.Position;
-                        snapshotPanel.UpdateSelectedNodeControlsLive(
-                            id,
-                            info.ContainedById,
-                            WorldSnapshotLive.GetNodeTemplateName(id),
-                            info.Radius,
-                            new Vector(position.X, position.Y, position.Z));
-                    }
-                    else
-                    {
-                        DisableGizmo();
-                    }
-                }
+            var target = Game.PlayerLookAtTargetObject;
+            if (target == null)
+            {
+                DisableGizmo();
+                snapshotPanel.UpdateSelectedNodeControls(null);
             }
             else
             {

@@ -270,6 +270,12 @@ namespace TJT.SWG
 
         public void RemoveNode()
         {
+            // DIAG 2026-07-19 (SWGEmu remove-regression triage): bounded step logging paired
+            // with the native Node::removeNode diag — one remove attempt paints the full path
+            // in utinni.log. Remove once the regression is closed.
+            UtinniCoreDotNet.Utility.Log.Info("RemoveNode: ENTRY EnableNodeEditing=" + EnableNodeEditing
+                + " IsMutationAvailable=" + WorldSnapshotLive.IsMutationAvailable);
+
             if (EnableNodeEditing)
             {
                 // Goal B Wave 2 (v18): id-keyed remove with the provider's full teardown.
@@ -313,19 +319,24 @@ namespace TJT.SWG
                 GroundSceneCallbacks.AddUpdateLoopCall(() =>
                 {
                     var obj = Game.PlayerLookAtTargetObject;
-                    if (obj != null)
+                    // DIAG 2026-07-19: legacy (SWGEmu) branch step logging — see method entry.
+                    if (obj == null)
                     {
-                        var node = WorldSnapshotReaderWriter.Get().GetNodeById((int)obj.NetworkId, obj.ParentObject);
-                        if (node != null)
-                        {
-                            editorPlugin.AddUndoCommand(this, new AddUndoCommandEventArgs(new RemoveWorldSnapshotNodeCommand(node)));
-                            WorldSnapshot.RemoveNode(node);
+                        UtinniCoreDotNet.Utility.Log.Info("RemoveNode[legacy]: PlayerLookAtTargetObject=null -> no-op");
+                        return;
+                    }
+                    var node = WorldSnapshotReaderWriter.Get().GetNodeById((int)obj.NetworkId, obj.ParentObject);
+                    UtinniCoreDotNet.Utility.Log.Info("RemoveNode[legacy]: target networkId=" + obj.NetworkId
+                        + " parent=" + (obj.ParentObject != null) + " node=" + (node != null ? "FOUND" : "NULL"));
+                    if (node != null)
+                    {
+                        editorPlugin.AddUndoCommand(this, new AddUndoCommandEventArgs(new RemoveWorldSnapshotNodeCommand(node)));
+                        WorldSnapshot.RemoveNode(node);
 
-                            // GAP 2: the removed node was the selected one — clear the now-stale gizmo
-                            // and the per-node panel controls (mirrors OnTarget's target-gone path).
-                            DisableGizmo();
-                            snapshotPanel.UpdateSelectedNodeControls(null);
-                        }
+                        // GAP 2: the removed node was the selected one — clear the now-stale gizmo
+                        // and the per-node panel controls (mirrors OnTarget's target-gone path).
+                        DisableGizmo();
+                        snapshotPanel.UpdateSelectedNodeControls(null);
                     }
                 });
             }

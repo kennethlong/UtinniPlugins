@@ -284,6 +284,7 @@ namespace TJT.SWG
                         var obj = Game.PlayerLookAtTargetObject;
                         if (obj == null)
                         {
+                            SysMsg.Notify("remove: no target");
                             return;
                         }
 
@@ -291,7 +292,10 @@ namespace TJT.SWG
                         var record = id != 0 ? LiveWorldSnapshotNodeRecord.Capture(id) : null;
                         if (record == null)
                         {
-                            return; // target is not a snapshot node — miss-safe no-op
+                            // Miss-safe no-op — but SAY so: silent bails here cost a smoke
+                            // round on 2026-07-19 (target was interior geometry, not the node).
+                            SysMsg.Notify("remove: target " + id + " is not a snapshot node (interior cells/children have their own ids — target or pick the building itself)");
+                            return;
                         }
 
                         int result = WorldSnapshotLive.RemoveNode(id);
@@ -305,6 +309,10 @@ namespace TJT.SWG
                         else if (result == -1)
                         {
                             SysMsg.Notify("can't delete an occupied building — step (or teleport) out of it first");
+                        }
+                        else
+                        {
+                            SysMsg.Notify("remove: node " + id + " captured but the engine missed it (result 0) — report this");
                         }
                     });
                     return;
@@ -395,11 +403,14 @@ namespace TJT.SWG
                 {
                     int removed = 0;
                     int occupiedCount = 0;
+                    int captureMissCount = 0;
+                    int engineMissCount = 0;
                     foreach (var id in ids)
                     {
                         var record = LiveWorldSnapshotNodeRecord.Capture(id);
                         if (record == null)
                         {
+                            captureMissCount++;
                             continue;
                         }
 
@@ -413,14 +424,34 @@ namespace TJT.SWG
                         {
                             occupiedCount++;
                         }
+                        else
+                        {
+                            engineMissCount++;
+                        }
                     }
 
                     DisableGizmo();
                     snapshotPanel.UpdateSelectedNodeControls(null);
 
-                    if (occupiedCount > 0)
+                    // Every outcome speaks. The all-miss case was fully silent until 2026-07-19
+                    // (a delete-from-inside attempt vanished without a trace — capture-miss
+                    // usually means the placements table is stale for the current scene).
+                    if (occupiedCount > 0 || captureMissCount > 0 || engineMissCount > 0)
                     {
-                        SysMsg.Notify(removed + " removed; " + occupiedCount + " refused as occupied (step out first — server-populated buildings always refuse)");
+                        string msg = removed + " removed";
+                        if (occupiedCount > 0)
+                        {
+                            msg += "; " + occupiedCount + " refused as occupied (step out first — server-populated buildings always refuse)";
+                        }
+                        if (captureMissCount > 0)
+                        {
+                            msg += "; " + captureMissCount + " not in the live snapshot (stale placements table? refresh and retry)";
+                        }
+                        if (engineMissCount > 0)
+                        {
+                            msg += "; " + engineMissCount + " captured but missed by the engine (result 0) — report this";
+                        }
+                        SysMsg.Notify(msg);
                     }
                     else if (removed > 0)
                     {

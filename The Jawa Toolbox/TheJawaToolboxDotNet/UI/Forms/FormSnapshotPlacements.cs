@@ -572,7 +572,7 @@ namespace TJT.UI.Forms
             using (var dlg = new FormSaveConfirmDialog(
                 "Delete " + ids.Count + " placements?",
                 "This removes " + ids.Count + " object placements from the snapshot. This is undoable in the editor until you save."
-                    + " The in-world object stays visible until the next scene change.",
+                    + " (Live-mutation clients despawn the object immediately; on SWGEmu it stays visible until the next scene change.)",
                 "Delete",
                 "Cancel"))
             {
@@ -583,7 +583,10 @@ namespace TJT.UI.Forms
                 }
 
                 worldSnapshot.BulkDelete(ids);
-                SetStatus("Deleted " + ids.Count + " placements.", false);
+                // The delete runs async on the game thread; the per-outcome result arrives as a
+                // SysMsg (removed / occupied / not-in-snapshot / engine-miss counts). Don't claim
+                // success here -- the old "Deleted N placements." masked a fully-silent no-op.
+                SetStatus("Delete requested for " + ids.Count + " placements -- result arrives as a system message.", false);
                 ScheduleRefresh();
             }
         }

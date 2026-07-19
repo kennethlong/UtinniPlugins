@@ -53,6 +53,7 @@ namespace TJT.UI.SubPanels
         private UtinniButton btnReadSelectedObject;
         private UtinniButton btnInspectPlayer;
         private UtinniButton btnInspectCamera;
+        private UtinniButton btnPickCenter;
         private UtinniTextbox txtSysMsg;
         private UtinniButton btnSendSysMsg;
         private UtinniTextbox txtSelectedObject;
@@ -128,12 +129,32 @@ namespace TJT.UI.SubPanels
                 FlatStyle = System.Windows.Forms.FlatStyle.Popup,
                 ForeColor = Color.WhiteSmoke,
                 Location = new Point(177, 139),
-                Size = new Size(237, 20),
+                Size = new Size(130, 20),
                 Text = "Inspect Camera",
                 UseDisableColor = true,
                 UseVisualStyleBackColor = false
             };
             btnInspectCamera.Click += btnInspectCamera_Click;
+
+            // v20 layer oracle: cast the engine's cursor ray through SCREEN CENTER (aim the camera at
+            // the thing, then click here -- the cursor is on this button, so center-cast is the reliable
+            // shape) and classify the hit per the provider's three-layer model: snapshot (editable) /
+            // server-streamed (targetable, not .ws-editable) / interior-layout .ilf decoration (id-less,
+            // not editable). Not scene-gated: degrades to "(unavailable)" via the native -1.
+            btnPickCenter = new UtinniButton
+            {
+                Anchor = System.Windows.Forms.AnchorStyles.Top | System.Windows.Forms.AnchorStyles.Right,
+                BackColor = Color.FromArgb(0, 122, 204),
+                DrawOutline = false,
+                FlatStyle = System.Windows.Forms.FlatStyle.Popup,
+                ForeColor = Color.WhiteSmoke,
+                Location = new Point(310, 139),
+                Size = new Size(104, 20),
+                Text = "Pick Center",
+                UseDisableColor = true,
+                UseVisualStyleBackColor = false
+            };
+            btnPickCenter.Click += btnPickCenter_Click;
 
             // Sysmsg broadcast row: type a message, inject it into the client's chat/system feed via
             // the v14-advertised systemMessageManager::sendMessage (SysMsg.Broadcast). Not scene-gated
@@ -185,9 +206,56 @@ namespace TJT.UI.SubPanels
             Controls.Add(btnReadSelectedObject);
             Controls.Add(btnInspectPlayer);
             Controls.Add(btnInspectCamera);
+            Controls.Add(btnPickCenter);
             Controls.Add(txtSysMsg);
             Controls.Add(btnSendSysMsg);
             Controls.Add(txtSelectedObject);
+        }
+
+        // v20 layer oracle. GAME THREAD for the native pick + wsGetNodeInfo membership probe
+        // (both game-thread-only); only the readout string crosses back to the UI thread.
+        // objectsOnly=1 drops terrain/terrainFlora/interiorGeometry, so an id-0 HIT indoors is
+        // specifically an id-less interior-layout (.ilf) decoration -- the provider's oracle:
+        //   id==0                      -> .ilf decoration (not world state, not editable)
+        //   id!=0 + wsGetNodeInfo hit  -> SNAPSHOT layer (ours: remove/move/save apply)
+        //   id!=0 + wsGetNodeInfo miss -> server-streamed / non-snapshot (not .ws-editable)
+        private void btnPickCenter_Click(object sender, EventArgs e)
+        {
+            GameCallbacks.AddMainLoopCall(() =>
+            {
+                string verdict;
+                long id;
+                var point = new float[3];
+                int result = UtinniCoreDotNet.Utility.Native.WorldPickScreenCenter(1, out id, point);
+                string at = string.Format(" at ({0:F1}, {1:F1}, {2:F1})", point[0], point[1], point[2]);
+
+                if (result == -1)
+                {
+                    verdict = "pick unavailable (needs the v20 advertised client and a game window)";
+                }
+                else if (result == 0)
+                {
+                    verdict = "no object within targeting range at screen center";
+                }
+                else if (id == 0)
+                {
+                    verdict = "interior decoration (.ilf) -- id-less, not world state, not editable" + at;
+                }
+                else
+                {
+                    bool isSnapshotNode;
+                    using (var info = new WorldSnapshotNodeInfo())
+                    {
+                        isSnapshotNode = WorldSnapshotLive.GetNodeInfo(id, info);
+                    }
+                    verdict = isSnapshotNode
+                        ? "SNAPSHOT node " + id + " (editable -- remove/move/save apply)" + at
+                        : "server/world object " + id + " (targetable, not .ws-editable)" + at;
+                }
+
+                TJT.SWG.SysMsg.Notify("pick: " + verdict);
+                BeginInvoke((Action)(() => { txtSelectedObject.Text = "Pick center: " + verdict; }));
+            });
         }
 
         // World-pick: inspect the HUD's currently-picked world object (CuiManager.SelectedObject ->

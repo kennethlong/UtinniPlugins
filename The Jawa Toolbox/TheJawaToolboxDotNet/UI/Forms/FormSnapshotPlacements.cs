@@ -95,6 +95,8 @@ namespace TJT.UI.Forms
             public float X;
             public float Y;
             public float Z;
+            public string Type;      // template-path classification (provider ANSWERS 2026-07-19 UX note)
+            public float Distance;   // meters from the player at capture time; -1 = no player
         }
 
         private readonly List<PlacementRow> allRows = new List<PlacementRow>();
@@ -214,7 +216,47 @@ namespace TJT.UI.Forms
                 Width = 180,
             };
 
-            grid.Columns.AddRange(colId, colTemplate, colCell, colPosition);
+            // 2026-07-19 provider-ANSWERS UX additions: template-path type classification + distance
+            // from the player at capture time. Distance sorts numerically via OnGridSortCompare (the
+            // display string is honest, the sort key is the meters value stashed in the cell Tag).
+            var colType = new DataGridViewTextBoxColumn
+            {
+                Name = "colType",
+                HeaderText = "Type",
+                Width = 110,
+            };
+
+            var colDistance = new DataGridViewTextBoxColumn
+            {
+                Name = "colDistance",
+                HeaderText = "Dist",
+                Width = 70,
+            };
+            colDistance.DefaultCellStyle.Alignment = DataGridViewContentAlignment.MiddleRight;
+
+            grid.Columns.AddRange(colId, colType, colTemplate, colCell, colPosition, colDistance);
+            grid.SortCompare += OnGridSortCompare;
+        }
+
+        // Numeric sort for the Id + Dist columns (unbound rows sort lexicographically by default —
+        // "1000 m" would sort before "90 m"). The meters value rides in the cell Tag.
+        private void OnGridSortCompare(object sender, DataGridViewSortCompareEventArgs e)
+        {
+            if (e.Column.Name == "colDistance")
+            {
+                float a = (grid.Rows[e.RowIndex1].Cells[e.Column.Index].Tag as float?) ?? float.MaxValue;
+                float b = (grid.Rows[e.RowIndex2].Cells[e.Column.Index].Tag as float?) ?? float.MaxValue;
+                e.SortResult = a.CompareTo(b);
+                e.Handled = true;
+            }
+            else if (e.Column.Name == "colId")
+            {
+                long a, b;
+                long.TryParse((e.CellValue1 ?? "").ToString(), NumberStyles.Integer, CultureInfo.InvariantCulture, out a);
+                long.TryParse((e.CellValue2 ?? "").ToString(), NumberStyles.Integer, CultureInfo.InvariantCulture, out b);
+                e.SortResult = a.CompareTo(b);
+                e.Handled = true;
+            }
         }
 
         // ── Public surface driven by the SnapshotPanel ─────────────────────────
@@ -267,6 +309,30 @@ namespace TJT.UI.Forms
             {
                 var captured = new List<PlacementRow>();
                 int generation = 0;
+
+                // Player position for the Distance column, read ONCE per refresh on the game thread
+                // (Game.PlayerCreatureObject -> advertised-safe getter chain; the 2026-07-19 provider
+                // ANSWERS: a name filter over 15k planet-wide rows reads as "nothing happened" when
+                // the matches are kilometers away -- distance makes remote rows self-explaining).
+                float playerX = 0, playerY = 0, playerZ = 0;
+                bool hasPlayerPos = false;
+                try
+                {
+                    var playerTransform = Game.PlayerCreatureObject?.Transform;
+                    var playerPos = playerTransform?.Position;
+                    if (playerPos != null)
+                    {
+                        playerX = playerPos.X;
+                        playerY = playerPos.Y;
+                        playerZ = playerPos.Z;
+                        hasPlayerPos = true;
+                    }
+                }
+                catch
+                {
+                    // No player (charselect / not injected) -> distance column stays blank.
+                }
+
                 try
                 {
                     if (WorldSnapshotLive.IsAvailable)
@@ -294,15 +360,18 @@ namespace TJT.UI.Forms
                                 }
 
                                 var pos = info.Transform.Position;
+                                string template = WorldSnapshotLive.GetNodeTemplateName(id) ?? "";
                                 captured.Add(new PlacementRow
                                 {
                                     Id = id,
                                     ParentId = info.ContainedById,
-                                    ObjectTemplate = WorldSnapshotLive.GetNodeTemplateName(id) ?? "",
+                                    ObjectTemplate = template,
                                     Cell = ResolveCellName(info.ContainedById),
                                     X = pos.X,
                                     Y = pos.Y,
                                     Z = pos.Z,
+                                    Type = ClassifyTemplate(template),
+                                    Distance = hasPlayerPos ? DistanceTo(pos.X, pos.Y, pos.Z, playerX, playerY, playerZ) : -1f,
                                 });
                             }
                         }
@@ -322,15 +391,18 @@ namespace TJT.UI.Forms
                                 }
 
                                 var pos = node.Transform.Position;
+                                string template = node.ObjectTemplateName ?? "";
                                 captured.Add(new PlacementRow
                                 {
                                     Id = node.Id,
                                     ParentId = node.ParentId,
-                                    ObjectTemplate = node.ObjectTemplateName ?? "",
+                                    ObjectTemplate = template,
                                     Cell = ResolveCellName(node.ParentId),
                                     X = pos.X,
                                     Y = pos.Y,
                                     Z = pos.Z,
+                                    Type = ClassifyTemplate(template),
+                                    Distance = hasPlayerPos ? DistanceTo(pos.X, pos.Y, pos.Z, playerX, playerY, playerZ) : -1f,
                                 });
                             }
                         }
@@ -356,6 +428,53 @@ namespace TJT.UI.Forms
         private static string ResolveCellName(long parentId)
         {
             return parentId == 0 ? "" : "cell " + parentId.ToString(CultureInfo.InvariantCulture);
+        }
+
+        // Template-path type classification (provider ANSWERS 2026-07-19 UX note: the "three
+        // buildings, subtree=1" confusion was outdoor SIGNS — static/worldbuilding/sign/ is not a
+        // POB, and soundobjects are invisible by nature). Sign check runs BEFORE static so
+        // worldbuilding signs classify as signs.
+        private static string ClassifyTemplate(string template)
+        {
+            if (string.IsNullOrEmpty(template))
+            {
+                return "";
+            }
+
+            string t = template.ToLowerInvariant();
+            if (t.Contains("soundobject"))
+            {
+                return "sound (invisible)";
+            }
+            if (t.StartsWith("object/building/"))
+            {
+                return "building (POB)";
+            }
+            if (t.Contains("/sign/") || t.Contains("_sign_"))
+            {
+                return "sign";
+            }
+            if (t.StartsWith("object/static/"))
+            {
+                return "static";
+            }
+            if (t.StartsWith("object/tangible/"))
+            {
+                return "tangible";
+            }
+            if (t.StartsWith("object/mobile/"))
+            {
+                return "mobile";
+            }
+
+            var parts = t.Split('/');
+            return parts.Length >= 2 ? parts[1] : "";
+        }
+
+        private static float DistanceTo(float x, float y, float z, float px, float py, float pz)
+        {
+            float dx = x - px, dy = y - py, dz = z - pz;
+            return (float)Math.Sqrt(dx * dx + dy * dy + dz * dz);
         }
 
         private void OnRowsCaptured(List<PlacementRow> captured, int generation)
@@ -398,10 +517,13 @@ namespace TJT.UI.Forms
 
                 int idx = grid.Rows.Add(
                     row.Id.ToString(CultureInfo.InvariantCulture),
+                    row.Type ?? "",
                     row.ObjectTemplate,
                     row.Cell,
-                    FormatPosition(row));
+                    FormatPosition(row),
+                    row.Distance < 0 ? "" : row.Distance.ToString("0", CultureInfo.InvariantCulture) + " m");
                 grid.Rows[idx].Tag = row.Id; // stable selection key
+                grid.Rows[idx].Cells["colDistance"].Tag = row.Distance < 0 ? (float?)null : row.Distance; // numeric sort key
                 shown++;
             }
 
@@ -427,7 +549,8 @@ namespace TJT.UI.Forms
             string f = filter.ToLowerInvariant();
             return row.Id.ToString(CultureInfo.InvariantCulture).Contains(f)
                 || (row.ObjectTemplate != null && row.ObjectTemplate.ToLowerInvariant().Contains(f))
-                || (row.Cell != null && row.Cell.ToLowerInvariant().Contains(f));
+                || (row.Cell != null && row.Cell.ToLowerInvariant().Contains(f))
+                || (row.Type != null && row.Type.ToLowerInvariant().Contains(f));
         }
 
         private void OnFilterChanged(object sender, EventArgs e)

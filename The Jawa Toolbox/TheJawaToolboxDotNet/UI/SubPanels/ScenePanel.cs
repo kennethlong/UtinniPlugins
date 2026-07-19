@@ -56,6 +56,14 @@ namespace TJT.UI.SubPanels
             ini.Load();
 
             txtAvatarObjectFilename.Text = ini.GetString("Scene", "defaultAvatarFilename");
+
+            if (UtinniCoreDotNet.Utility.Native.IsAdvertisedClient())
+            {
+                // Weather/time-of-day drive SWGEmu-only terrain RVAs (the native setters no-op
+                // there); gray them so the UI matches what the client can actually do.
+                nudWeatherIndex.Enabled = false;
+                sldTimeOfDay.Enabled = false;
+            }
         }
 
         private void CreateSettings()
@@ -123,8 +131,9 @@ namespace TJT.UI.SubPanels
             btnUnloadScene.Enabled = isSceneActive;
             btnReloadScene.Enabled = isSceneActive;
 
-            nudWeatherIndex.Enabled = isSceneActive;
-            sldTimeOfDay.Enabled = isSceneActive;
+            bool weatherControlsUsable = !UtinniCoreDotNet.Utility.Native.IsAdvertisedClient();
+            nudWeatherIndex.Enabled = isSceneActive && weatherControlsUsable;
+            sldTimeOfDay.Enabled = isSceneActive && weatherControlsUsable;
 
             if (!isSceneActive)
             {

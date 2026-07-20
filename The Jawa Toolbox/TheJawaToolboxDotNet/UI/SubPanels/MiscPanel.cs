@@ -54,9 +54,12 @@ namespace TJT.UI.SubPanels
         private UtinniButton btnInspectPlayer;
         private UtinniButton btnInspectCamera;
         private UtinniButton btnPickCenter;
+        private UtinniButton btnIlfProbe;
+        private UtinniButton btnIlfNudge;
         private UtinniTextbox txtSysMsg;
         private UtinniButton btnSendSysMsg;
         private UtinniTextbox txtSelectedObject;
+        private bool ilfProbeArmed;
 
         public MiscPanel(UtINI ini) : base("Misc")
         {
@@ -193,7 +196,7 @@ namespace TJT.UI.SubPanels
                 ForeColor = Color.WhiteSmoke,
                 Font = new Font(System.Drawing.FontFamily.GenericMonospace, 8.25f),
                 Location = new Point(3, 191),
-                Size = new Size(411, 150),
+                Size = new Size(411, 124),
                 Multiline = true,
                 ReadOnly = true,
                 // The full object readout (11 lines) + wrapped long paths overflow the fixed height;
@@ -202,14 +205,80 @@ namespace TJT.UI.SubPanels
                 Text = "Selected object: (none)"
             };
 
+            // CONSULT-69 decisive-experiment row (probe scaffolding -- remove when the experiment
+            // closes). Arm the probe, hover an in-world object (divergence verdicts stream to
+            // utinni.log + the hover pick latches), then Nudge moves the latched object +0.25m via
+            // the advertised pointer-keyed path. Kill switch = toggle off (also clears the latch);
+            // pair with the SnapshotPanel targeting filter for id-less .ilf decorations.
+            btnIlfProbe = new UtinniButton
+            {
+                Anchor = System.Windows.Forms.AnchorStyles.Top | System.Windows.Forms.AnchorStyles.Left,
+                BackColor = Color.FromArgb(0, 122, 204),
+                DrawOutline = false,
+                FlatStyle = System.Windows.Forms.FlatStyle.Popup,
+                ForeColor = Color.WhiteSmoke,
+                Location = new Point(3, 321),
+                Size = new Size(160, 20),
+                Text = "ILF Probe: Off",
+                UseDisableColor = true,
+                UseVisualStyleBackColor = false
+            };
+            btnIlfProbe.Click += btnIlfProbe_Click;
+
+            btnIlfNudge = new UtinniButton
+            {
+                Anchor = System.Windows.Forms.AnchorStyles.Top | System.Windows.Forms.AnchorStyles.Right,
+                BackColor = Color.FromArgb(0, 122, 204),
+                DrawOutline = false,
+                FlatStyle = System.Windows.Forms.FlatStyle.Popup,
+                ForeColor = Color.WhiteSmoke,
+                Location = new Point(310, 321),
+                Size = new Size(104, 20),
+                Text = "Nudge Latched",
+                UseDisableColor = true,
+                UseVisualStyleBackColor = false
+            };
+            btnIlfNudge.Click += btnIlfNudge_Click;
+
             Size = new Size(417, 347);
             Controls.Add(btnReadSelectedObject);
             Controls.Add(btnInspectPlayer);
             Controls.Add(btnInspectCamera);
             Controls.Add(btnPickCenter);
+            Controls.Add(btnIlfProbe);
+            Controls.Add(btnIlfNudge);
             Controls.Add(txtSysMsg);
             Controls.Add(btnSendSysMsg);
             Controls.Add(txtSelectedObject);
+        }
+
+        // CONSULT-69: arm/disarm the native per-frame probe. Marshaled to the game thread (the
+        // native side reads engine rows); the button text tracks the requested state.
+        private void btnIlfProbe_Click(object sender, EventArgs e)
+        {
+            ilfProbeArmed = !ilfProbeArmed;
+            bool arm = ilfProbeArmed;
+            btnIlfProbe.Text = arm ? "ILF Probe: ON (hover objects)" : "ILF Probe: Off";
+            GameCallbacks.AddMainLoopCall(() =>
+            {
+                UtinniCoreDotNet.Utility.Native.SetIlfProbe(arm);
+            });
+            TJT.SWG.SysMsg.Notify(arm
+                ? "ilf probe armed -- enable the targeting filter, hover objects, watch the log"
+                : "ilf probe disarmed (latch cleared)");
+        }
+
+        // CONSULT-69: nudge the latched hover pick +0.25m (parent-space) via the advertised
+        // pointer-keyed path. Visible movement of a DIVERGENCE-classified pick = experiment PASS.
+        private void btnIlfNudge_Click(object sender, EventArgs e)
+        {
+            GameCallbacks.AddMainLoopCall(() =>
+            {
+                bool moved = UtinniCoreDotNet.Utility.Native.IlfProbeNudge();
+                TJT.SWG.SysMsg.Notify(moved
+                    ? "ilf probe: nudged the latched object +0.25m"
+                    : "ilf probe: nothing latched (arm the probe and hover an object first)");
+            });
         }
 
         // v20 layer oracle. GAME THREAD for the native pick + wsGetNodeInfo membership probe
